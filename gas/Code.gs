@@ -8,7 +8,7 @@
 // 6. 生成されたURLをアプリの設定画面に入力
 
 // ===== 設定 =====
-const SS_ID = 'YOUR_SPREADSHEET_ID_HERE'; // ← スプレッドシートIDを設定
+const SS_ID = '1yLa_vbXhjDK2AkduL6gVzJQp3GlBQ7R_ENSpgLKkCbk'; // ← スプレッドシートIDを設定
 
 function getSpreadsheet() {
   return SpreadsheetApp.openById(SS_ID);
