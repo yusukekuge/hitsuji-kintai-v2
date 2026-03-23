@@ -128,13 +128,25 @@ function jsonError(message) {
 }
 
 // ===== シートデータ変換ヘルパー =====
+function formatCellValue(value) {
+  // Googleスプレッドシートが日付文字列をDateオブジェクトに自動変換するため、
+  // YYYY-MM-DD形式の文字列に戻す
+  if (value instanceof Date) {
+    const y = value.getFullYear();
+    const m = String(value.getMonth() + 1).padStart(2, '0');
+    const d = String(value.getDate()).padStart(2, '0');
+    return y + '-' + m + '-' + d;
+  }
+  return value;
+}
+
 function sheetToArray(sheet) {
   const data = sheet.getDataRange().getValues();
   if (data.length <= 1) return [];
   const headers = data[0];
   return data.slice(1).map(row => {
     const obj = {};
-    headers.forEach((h, i) => { obj[h] = row[i]; });
+    headers.forEach((h, i) => { obj[h] = formatCellValue(row[i]); });
     return obj;
   });
 }
@@ -170,9 +182,14 @@ function saveStaffData(staff) {
   ];
 
   if (rowIdx > 0) {
-    sheet.getRange(rowIdx, 1, 1, row.length).setValues([row]);
+    const range = sheet.getRange(rowIdx, 1, 1, row.length);
+    range.setNumberFormat('@');
+    range.setValues([row]);
   } else {
-    sheet.appendRow(row);
+    const newRow = sheet.getLastRow() + 1;
+    const range = sheet.getRange(newRow, 1, 1, row.length);
+    range.setNumberFormat('@');
+    range.setValues([row]);
   }
   return 'ok';
 }
@@ -206,10 +223,14 @@ function getTimeRecordsByRangeData(startDate, endDate) {
 
 function addTimeRecordData(record) {
   const sheet = getSheet('time_records');
-  sheet.appendRow([
+  const newRow = sheet.getLastRow() + 1;
+  const row = [
     record.id, record.staffId, record.date,
     record.type, record.time, record.modified ? '1' : '0'
-  ]);
+  ];
+  const range = sheet.getRange(newRow, 1, 1, row.length);
+  range.setNumberFormat('@');
+  range.setValues([row]);
   return 'ok';
 }
 
@@ -218,7 +239,9 @@ function updateTimeRecordData(record) {
   const rowIdx = findRowIndex(sheet, 0, record.id);
   if (rowIdx > 0) {
     const row = [record.id, record.staffId, record.date, record.type, record.time, record.modified ? '1' : '0'];
-    sheet.getRange(rowIdx, 1, 1, row.length).setValues([row]);
+    const range = sheet.getRange(rowIdx, 1, 1, row.length);
+    range.setNumberFormat('@');
+    range.setValues([row]);
   }
   return 'ok';
 }
@@ -244,16 +267,21 @@ function saveShiftData(shift) {
   const data = sheet.getDataRange().getValues();
   let rowIdx = -1;
   for (let i = 1; i < data.length; i++) {
-    if (String(data[i][0]) === String(shift.staffId) && String(data[i][1]) === String(shift.date)) {
+    if (String(data[i][0]) === String(shift.staffId) && formatCellValue(data[i][1]) === String(shift.date)) {
       rowIdx = i + 1;
       break;
     }
   }
   const row = [shift.staffId, shift.date, shift.startTime || '', shift.endTime || ''];
   if (rowIdx > 0) {
-    sheet.getRange(rowIdx, 1, 1, row.length).setValues([row]);
+    const range = sheet.getRange(rowIdx, 1, 1, row.length);
+    range.setNumberFormat('@'); // テキスト形式に設定
+    range.setValues([row]);
   } else {
-    sheet.appendRow(row);
+    const newRow = sheet.getLastRow() + 1;
+    const range = sheet.getRange(newRow, 1, 1, row.length);
+    range.setNumberFormat('@'); // テキスト形式に設定
+    range.setValues([row]);
   }
   return 'ok';
 }
@@ -262,7 +290,7 @@ function deleteShiftData(staffId, date) {
   const sheet = getSheet('shifts');
   const data = sheet.getDataRange().getValues();
   for (let i = data.length - 1; i >= 1; i--) {
-    if (String(data[i][0]) === String(staffId) && String(data[i][1]) === String(date)) {
+    if (String(data[i][0]) === String(staffId) && formatCellValue(data[i][1]) === String(date)) {
       sheet.deleteRow(i + 1);
       break;
     }
@@ -279,14 +307,18 @@ function saveShiftsBulkData(shifts) {
 
   // 該当月の既存データを削除（逆順で削除）
   for (let i = data.length - 1; i >= 1; i--) {
-    if (String(data[i][1]).startsWith(prefix)) {
+    if (formatCellValue(data[i][1]).startsWith(prefix)) {
       sheet.deleteRow(i + 1);
     }
   }
 
-  // 新しいデータを追加
+  // 新しいデータを追加（テキスト形式で書き込み）
   shifts.forEach(sh => {
-    sheet.appendRow([sh.staffId, sh.date, sh.startTime || '', sh.endTime || '']);
+    const newRow = sheet.getLastRow() + 1;
+    const row = [sh.staffId, sh.date, sh.startTime || '', sh.endTime || ''];
+    const range = sheet.getRange(newRow, 1, 1, row.length);
+    range.setNumberFormat('@');
+    range.setValues([row]);
   });
 
   return 'ok';
