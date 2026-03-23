@@ -38,7 +38,7 @@ const ShiftEditScreen = (() => {
         </div>
 
         <div class="table-wrap">
-          <div class="shift-calendar" style="grid-template-columns: 80px repeat(${daysInMonth}, 1fr);">
+          <div class="shift-calendar" style="grid-template-columns: 70px repeat(${daysInMonth}, minmax(38px, 1fr));">
             <div class="shift-header-cell">名前</div>
             ${dateHeaders.map(h => `
               <div class="shift-header-cell ${h.dow === 0 ? 'sunday' : h.dow === 6 ? 'saturday' : ''}" style="${h.dow === 0 ? 'color:var(--danger);' : h.dow === 6 ? 'color:var(--info);' : ''}">
@@ -57,11 +57,9 @@ const ShiftEditScreen = (() => {
                   return `
                     <div class="shift-cell ${isToday ? 'today' : ''} ${h.dow === 0 ? 'sunday' : h.dow === 6 ? 'saturday' : ''}">
                       <input type="text" class="shift-input" data-staff="${s.id}" data-date="${h.dateStr}" data-field="start"
-                        value="${sh ? sh.startTime || '' : ''}" placeholder="--:--" maxlength="5"
-                        style="width:100%;font-size:0.68rem;padding:1px 2px;border:1px solid var(--border);border-radius:2px;text-align:center;margin-bottom:1px;">
+                        value="${sh ? sh.startTime || '' : ''}" placeholder="--:--" maxlength="5">
                       <input type="text" class="shift-input" data-staff="${s.id}" data-date="${h.dateStr}" data-field="end"
-                        value="${sh ? sh.endTime || '' : ''}" placeholder="--:--" maxlength="5"
-                        style="width:100%;font-size:0.68rem;padding:1px 2px;border:1px solid var(--border);border-radius:2px;text-align:center;">
+                        value="${sh ? sh.endTime || '' : ''}" placeholder="--:--" maxlength="5">
                     </div>
                   `;
                 }).join('')}

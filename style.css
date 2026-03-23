@@ -261,10 +261,12 @@ td.num { text-align: right; font-variant-numeric: tabular-nums; }
 }
 .shift-header-cell, .shift-cell {
   background: var(--white);
-  padding: 6px 4px;
+  padding: 4px 2px;
   text-align: center;
   font-size: 0.78rem;
-  min-height: 44px;
+  min-height: 40px;
+  overflow: hidden;
+  box-sizing: border-box;
 }
 .shift-header-cell {
   background: var(--bg);
@@ -281,12 +283,18 @@ td.num { text-align: right; font-variant-numeric: tabular-nums; }
   line-height: 1.3;
   margin-top: 2px;
 }
-.shift-cell input[type="time"] {
+.shift-cell input[type="time"],
+.shift-cell input[type="text"],
+.shift-cell .shift-input {
   width: 100%;
-  font-size: 0.72rem;
-  padding: 2px;
+  font-size: 10px;
+  padding: 1px 2px;
   border: 1px solid var(--border);
-  border-radius: 3px;
+  border-radius: 2px;
+  text-align: center;
+  box-sizing: border-box;
+  margin: 0 0 1px 0;
+  line-height: 1.2;
 }
 .shift-cell select {
   width: 100%;
