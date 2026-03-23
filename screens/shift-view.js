@@ -98,33 +98,53 @@ const ShiftViewScreen = (() => {
     if (!tableArea) return;
 
     Utils.showToast('PDF生成中...', '');
-    const renderArea = document.getElementById('pdf-render-area');
-    const wrapper = document.createElement('div');
-    wrapper.style.cssText = 'background:#fff;padding:16px 12px;font-family:Noto Sans JP,sans-serif;';
-
-    const title = document.createElement('h2');
-    title.textContent = titleEl.textContent;
-    title.style.cssText = 'text-align:center;font-size:16px;margin-bottom:12px;font-weight:700;';
-    wrapper.appendChild(title);
-
-    const clone = tableArea.cloneNode(true);
-    wrapper.appendChild(clone);
-    renderArea.appendChild(wrapper);
 
     try {
-      const canvas = await html2canvas(wrapper, { scale: 2, useCORS: true, allowTaint: true, backgroundColor: '#ffffff' });
+      // html2canvasをページ内の実際の要素に対して直接実行
+      // オフスクリーンのクローンではなく、一時的に幅を固定して描画精度を上げる
+      const origOverflow = tableArea.style.overflow;
+      const origMinW = tableArea.style.minWidth;
+      tableArea.style.overflow = 'visible';
+      tableArea.style.minWidth = '1100px';
+
+      // 少し待ってレイアウトを安定させる
+      await new Promise(r => setTimeout(r, 100));
+
+      const canvas = await html2canvas(tableArea, {
+        scale: 2,
+        useCORS: true,
+        allowTaint: true,
+        backgroundColor: '#ffffff',
+        logging: false
+      });
+
+      // スタイルを元に戻す
+      tableArea.style.overflow = origOverflow;
+      tableArea.style.minWidth = origMinW;
+
       const { jsPDF } = window.jspdf;
-      const doc = new jsPDF('l', 'mm', 'a4');
-      const pageW = 297, pageH = 210, margin = 5;
-      const availW = pageW - margin * 2, availH = pageH - margin * 2;
+      const doc = new jsPDF('l', 'mm', 'a4'); // A4横向き
+      const pageW = 297, pageH = 210, margin = 8;
+      const availW = pageW - margin * 2;
+      const availH = pageH - margin * 2;
+
+      // タイトルを描画
+      const titleText = titleEl ? titleEl.textContent : '';
+      doc.setFontSize(14);
+      doc.text(titleText, pageW / 2, margin + 4, { align: 'center' });
+
+      // カレンダー画像を描画（タイトル分のスペースを確保）
+      const titleSpace = 12;
+      const imgAreaH = availH - titleSpace;
       const imgW = availW;
       const imgH = canvas.height * imgW / canvas.width;
 
-      if (imgH <= availH) {
-        doc.addImage(canvas.toDataURL('image/png'), 'PNG', margin, margin, imgW, imgH);
+      if (imgH <= imgAreaH) {
+        doc.addImage(canvas.toDataURL('image/jpeg', 0.95), 'JPEG', margin, margin + titleSpace, imgW, imgH);
       } else {
-        const scale = availH / imgH;
-        doc.addImage(canvas.toDataURL('image/png'), 'PNG', margin + (availW - imgW * scale) / 2, margin, imgW * scale, availH);
+        const scale = imgAreaH / imgH;
+        const scaledW = imgW * scale;
+        doc.addImage(canvas.toDataURL('image/jpeg', 0.95), 'JPEG', margin + (availW - scaledW) / 2, margin + titleSpace, scaledW, imgAreaH);
       }
 
       const ym = `${currentYear}年${String(currentMonth + 1).padStart(2, '0')}月`;
@@ -132,9 +152,7 @@ const ShiftViewScreen = (() => {
       Utils.showToast('PDFを出力しました', 'success');
     } catch (e) {
       console.error('PDF生成エラー:', e);
-      Utils.showToast('PDF生成に失敗しました', 'error');
-    } finally {
-      renderArea.removeChild(wrapper);
+      Utils.showToast('PDF生成に失敗しました: ' + e.message, 'error');
     }
   }
 
