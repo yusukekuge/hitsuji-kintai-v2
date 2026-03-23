@@ -100,17 +100,28 @@ const ShiftViewScreen = (() => {
     Utils.showToast('PDF生成中...', '');
 
     try {
-      // html2canvasをページ内の実際の要素に対して直接実行
-      // オフスクリーンのクローンではなく、一時的に幅を固定して描画精度を上げる
-      const origOverflow = tableArea.style.overflow;
-      const origMinW = tableArea.style.minWidth;
-      tableArea.style.overflow = 'visible';
-      tableArea.style.minWidth = '1100px';
+      // タイトル＋カレンダーをまとめてキャプチャするためのラッパーを作成
+      const wrapper = document.createElement('div');
+      wrapper.style.cssText = 'position:absolute;left:0;top:0;background:#fff;padding:16px 12px;z-index:9999;';
 
-      // 少し待ってレイアウトを安定させる
-      await new Promise(r => setTimeout(r, 100));
+      // タイトル要素を作成
+      const titleDiv = document.createElement('div');
+      titleDiv.textContent = titleEl ? titleEl.textContent : '';
+      titleDiv.style.cssText = 'text-align:center;font-size:18px;font-weight:700;margin-bottom:12px;font-family:Noto Sans JP,sans-serif;';
+      wrapper.appendChild(titleDiv);
 
-      const canvas = await html2canvas(tableArea, {
+      // テーブルエリアをクローンして追加
+      const clone = tableArea.cloneNode(true);
+      clone.style.overflow = 'visible';
+      clone.style.minWidth = '1100px';
+      wrapper.appendChild(clone);
+
+      document.body.appendChild(wrapper);
+
+      // レイアウト安定待ち
+      await new Promise(r => setTimeout(r, 150));
+
+      const canvas = await html2canvas(wrapper, {
         scale: 2,
         useCORS: true,
         allowTaint: true,
@@ -118,9 +129,7 @@ const ShiftViewScreen = (() => {
         logging: false
       });
 
-      // スタイルを元に戻す
-      tableArea.style.overflow = origOverflow;
-      tableArea.style.minWidth = origMinW;
+      document.body.removeChild(wrapper);
 
       const { jsPDF } = window.jspdf;
       const doc = new jsPDF('l', 'mm', 'a4'); // A4横向き
@@ -128,23 +137,16 @@ const ShiftViewScreen = (() => {
       const availW = pageW - margin * 2;
       const availH = pageH - margin * 2;
 
-      // タイトルを描画
-      const titleText = titleEl ? titleEl.textContent : '';
-      doc.setFontSize(14);
-      doc.text(titleText, pageW / 2, margin + 4, { align: 'center' });
-
-      // カレンダー画像を描画（タイトル分のスペースを確保）
-      const titleSpace = 12;
-      const imgAreaH = availH - titleSpace;
+      // タイトル含むカレンダー全体を画像として描画
       const imgW = availW;
       const imgH = canvas.height * imgW / canvas.width;
 
-      if (imgH <= imgAreaH) {
-        doc.addImage(canvas.toDataURL('image/jpeg', 0.95), 'JPEG', margin, margin + titleSpace, imgW, imgH);
+      if (imgH <= availH) {
+        doc.addImage(canvas.toDataURL('image/jpeg', 0.95), 'JPEG', margin, margin, imgW, imgH);
       } else {
-        const scale = imgAreaH / imgH;
+        const scale = availH / imgH;
         const scaledW = imgW * scale;
-        doc.addImage(canvas.toDataURL('image/jpeg', 0.95), 'JPEG', margin + (availW - scaledW) / 2, margin + titleSpace, scaledW, imgAreaH);
+        doc.addImage(canvas.toDataURL('image/jpeg', 0.95), 'JPEG', margin + (availW - scaledW) / 2, margin, scaledW, availH);
       }
 
       const ym = `${currentYear}年${String(currentMonth + 1).padStart(2, '0')}月`;
