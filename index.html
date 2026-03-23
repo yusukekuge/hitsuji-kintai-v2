@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>100匹目の羊 - 勤怠管理システム</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.2/jspdf.umd.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+</head>
+<body>
+  <div id="app">
+    <header id="header">
+      <div class="header-inner">
+        <h1 class="logo" id="logo-btn">🐑 100匹目の羊</h1>
+        <div class="current-time" id="current-time"></div>
+        <button class="menu-toggle" id="menu-toggle" aria-label="メニュー">☰</button>
+      </div>
+      <nav id="nav" class="nav">
+        <ul class="nav-list">
+          <li><a href="#" data-screen="clock" class="nav-link active">打刻</a></li>
+          <li><a href="#" data-screen="shift-view" class="nav-link">シフト表</a></li>
+          <li class="nav-divider"></li>
+          <li><a href="#" data-screen="dashboard" class="nav-link admin-link">ダッシュボード</a></li>
+          <li><a href="#" data-screen="records" class="nav-link admin-link">勤務記録</a></li>
+          <li><a href="#" data-screen="payroll" class="nav-link admin-link">給与計算</a></li>
+          <li><a href="#" data-screen="shift-edit" class="nav-link admin-link">シフト作成</a></li>
+          <li><a href="#" data-screen="staff" class="nav-link admin-link">スタッフ管理</a></li>
+          <li><a href="#" data-screen="settings" class="nav-link admin-link">設定</a></li>
+        </ul>
+      </nav>
+    </header>
+
+    <main id="main">
+      <section id="screen-clock" class="screen active"></section>
+      <section id="screen-shift-view" class="screen"></section>
+      <section id="screen-dashboard" class="screen"></section>
+      <section id="screen-records" class="screen"></section>
+      <section id="screen-payroll" class="screen"></section>
+      <section id="screen-shift-edit" class="screen"></section>
+      <section id="screen-staff" class="screen"></section>
+      <section id="screen-settings" class="screen"></section>
+    </main>
+
+    <!-- PIN認証モーダル -->
+    <div id="pin-modal" class="modal">
+      <div class="modal-content">
+        <h2>管理者認証</h2>
+        <p>PINコード（4桁）を入力してください</p>
+        <input type="password" id="pin-input" maxlength="4" pattern="[0-9]{4}" inputmode="numeric" autocomplete="off">
+        <div class="modal-actions">
+          <button id="pin-cancel" class="btn btn-secondary">キャンセル</button>
+          <button id="pin-submit" class="btn btn-primary">認証</button>
+        </div>
+        <p id="pin-error" class="error-text" style="display:none;">PINコードが正しくありません</p>
+      </div>
+    </div>
+
+    <!-- 汎用確認モーダル -->
+    <div id="confirm-modal" class="modal">
+      <div class="modal-content">
+        <h2 id="confirm-title"></h2>
+        <p id="confirm-message"></p>
+        <div class="modal-actions">
+          <button id="confirm-cancel" class="btn btn-secondary">キャンセル</button>
+          <button id="confirm-ok" class="btn btn-primary">OK</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- トースト通知 -->
+    <div id="toast" class="toast"></div>
+
+    <!-- PDF生成用オフスクリーン領域 -->
+    <div id="pdf-render-area" style="position:absolute;left:-9999px;top:0;"></div>
+  </div>
+
+  <script>
+    const _v = 'v=' + Date.now();
+    const _scripts = [
+      'modules/utils.js','modules/storage.js','modules/calc.js',
+      'screens/clock.js','screens/shift-view.js','screens/shift-edit.js',
+      'screens/dashboard.js','screens/records.js','screens/payroll.js',
+      'screens/staff.js','screens/settings.js','app.js'
+    ];
+    _scripts.forEach(s => document.write('<script src="'+s+'?'+_v+'"><\/script>'));
+  </script>
+</body>
+</html>
