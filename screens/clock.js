@@ -4,9 +4,11 @@ const ClockScreen = (() => {
 
   async function render() {
     const container = document.getElementById('screen-clock');
-    const staff = await Storage.getStaff();
     const todayStr = Utils.today();
-    const records = await Storage.getTimeRecords(todayStr);
+    const [staff, records] = await Promise.all([
+      Storage.getStaff(),
+      Storage.getTimeRecords(todayStr)
+    ]);
 
     const statuses = {};
     staff.forEach(s => {

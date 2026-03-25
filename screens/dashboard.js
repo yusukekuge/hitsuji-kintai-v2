@@ -2,12 +2,18 @@
 const DashboardScreen = (() => {
   async function render() {
     const container = document.getElementById('screen-dashboard');
-    const staff = await Storage.getStaff();
     const now = new Date();
     const year = now.getFullYear();
     const month = now.getMonth();
     const period = Utils.getPayPeriod(year, month);
-    const records = await Storage.getTimeRecordsByRange(period.start, period.end);
+
+    // 年間累計用：1月の給与期間開始〜今月の給与期間終了を1回で取得
+    const janPeriod = Utils.getPayPeriod(year, 0);
+    const [staff, records, annualRecords] = await Promise.all([
+      Storage.getStaff(),
+      Storage.getTimeRecordsByRange(period.start, period.end),
+      Storage.getTimeRecordsByRange(janPeriod.start, period.end)
+    ]);
 
     const summaries = [];
     for (const s of staff) {
@@ -19,18 +25,18 @@ const DashboardScreen = (() => {
         if (dw.isComplete) { totalWork += dw.workMinutes; totalNight += dw.nightMinutes; workDays++; }
       });
 
-      // 年間累計（1月から今月まで）
+      // 年間累計（1月から今月まで）- annualRecordsから月別に集計
       let annualTotal = 0;
+      const wage = s.probation ? Calc.DEFAULTS.probationWage : (s.hourlyWage || Calc.DEFAULTS.hourlyWage);
       for (let m = 0; m <= month; m++) {
         const p = Utils.getPayPeriod(year, m);
-        const monthRecords = await Storage.getTimeRecordsByRange(p.start, p.end);
+        const monthRecords = annualRecords.filter(r => r.date >= p.start && r.date <= p.end);
         const monthDates = [...new Set(monthRecords.filter(r => r.staffId === s.id).map(r => r.date))];
         let monthWork = 0;
         monthDates.forEach(date => {
           const dw = Calc.calcDayWork(monthRecords, s.id, date);
           if (dw.isComplete) monthWork += dw.workMinutes;
         });
-        const wage = s.probation ? Calc.DEFAULTS.probationWage : (s.hourlyWage || Calc.DEFAULTS.hourlyWage);
         annualTotal += Math.floor(wage * monthWork / 60);
       }
 

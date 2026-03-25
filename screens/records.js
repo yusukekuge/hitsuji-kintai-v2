@@ -11,8 +11,10 @@ const RecordsScreen = (() => {
   async function render() {
     if (currentYear === undefined) init();
     const container = document.getElementById('screen-records');
-    const staff = await Storage.getStaff();
-    const records = await Storage.getTimeRecordsByMonth(currentYear, currentMonth);
+    const [staff, records] = await Promise.all([
+      Storage.getStaff(),
+      Storage.getTimeRecordsByMonth(currentYear, currentMonth)
+    ]);
     const daysInMonth = Utils.getDaysInMonth(currentYear, currentMonth);
 
     const filteredStaff = filterStaffId === 'all' ? staff : staff.filter(s => s.id === filterStaffId);
@@ -92,9 +94,11 @@ const RecordsScreen = (() => {
   }
 
   async function editRecord(staffId, date) {
-    const records = await Storage.getTimeRecords(date);
-    const staffRecords = records.filter(r => r.staffId === staffId).sort((a, b) => a.time.localeCompare(b.time));
-    const staff = await Storage.getStaff();
+    const [allRecords, staff] = await Promise.all([
+      Storage.getTimeRecords(date),
+      Storage.getStaff()
+    ]);
+    const staffRecords = allRecords.filter(r => r.staffId === staffId).sort((a, b) => a.time.localeCompare(b.time));
     const s = staff.find(st => st.id === staffId);
 
     const typeLabels = { clock_in: '出勤', break_start: '休憩開始', break_end: '休憩終了', clock_out: '退勤' };

@@ -200,12 +200,12 @@ const Storage = (() => {
     localSet('app_settings', settings);
   }
 
-  // PIN
-  function getPin() { return getSetting('admin_pin', ''); }
+  // PIN（デフォルト: 0000）
+  const DEFAULT_PIN = '0000';
+  function getPin() { return getSetting('admin_pin', DEFAULT_PIN); }
   function setPin(pin) { setSetting('admin_pin', pin); }
   function verifyPin(pin) {
     const stored = getPin();
-    if (!stored) return true;
     return pin === stored;
   }
 

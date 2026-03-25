@@ -75,11 +75,15 @@ const App = (() => {
 
     const screen = screens[screenName];
     if (screen && screen.render) {
+      const overlay = document.getElementById('loading-overlay');
+      overlay.classList.add('active');
       try {
         await screen.render();
       } catch (e) {
         console.error(`Screen render error (${screenName}):`, e);
         Utils.showToast('画面の表示中にエラーが発生しました', 'error');
+      } finally {
+        overlay.classList.remove('active');
       }
     }
   }

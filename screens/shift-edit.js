@@ -11,8 +11,10 @@ const ShiftEditScreen = (() => {
   async function render() {
     if (currentYear === undefined) init();
     const container = document.getElementById('screen-shift-edit');
-    const staff = await Storage.getStaff();
-    const shifts = await Storage.getShifts(currentYear, currentMonth);
+    const [staff, shifts] = await Promise.all([
+      Storage.getStaff(),
+      Storage.getShifts(currentYear, currentMonth)
+    ]);
     const daysInMonth = Utils.getDaysInMonth(currentYear, currentMonth);
     const todayStr = Utils.today();
 

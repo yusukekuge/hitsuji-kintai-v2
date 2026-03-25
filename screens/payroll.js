@@ -11,9 +11,11 @@ const PayrollScreen = (() => {
   async function render() {
     if (currentYear === undefined) init();
     const container = document.getElementById('screen-payroll');
-    const staff = await Storage.getStaff();
     const period = Utils.getPayPeriod(currentYear, currentMonth);
-    const records = await Storage.getTimeRecordsByRange(period.start, period.end);
+    const [staff, records] = await Promise.all([
+      Storage.getStaff(),
+      Storage.getTimeRecordsByRange(period.start, period.end)
+    ]);
 
     const payrolls = [];
     for (const s of staff) {
