@@ -4,9 +4,15 @@ const Storage = (() => {
   let gasUrl = localStorage.getItem('gas_url') || DEFAULT_GAS_URL;
   let useGas = false;
 
+  // --- メモリキャッシュ ---
+  let _staffCache = null;
+  let _staffCacheTime = 0;
+  const STAFF_CACHE_TTL = 60000; // 60秒
+
   function init() {
     gasUrl = localStorage.getItem('gas_url') || DEFAULT_GAS_URL;
     useGas = gasUrl.length > 0;
+    _staffCache = null; // キャッシュクリア
   }
 
   function setGasUrl(url) {
@@ -16,6 +22,7 @@ const Storage = (() => {
   }
   function getGasUrl() { return gasUrl; }
   function isGasMode() { return useGas; }
+  function clearStaffCache() { _staffCache = null; }
 
   // --- GAS通信（15秒タイムアウト付き） ---
   async function gasRequest(action, data = {}) {
@@ -37,6 +44,11 @@ const Storage = (() => {
       clearTimeout(timeoutId);
       throw e;
     }
+  }
+
+  // --- GAS非同期保存（バックグラウンド、エラー時はwarnのみ） ---
+  function gasRequestBackground(action, data = {}) {
+    gasRequest(action, data).catch(e => console.warn(`BG ${action} failed:`, e.message));
   }
 
   // --- ローカルストレージ操作 ---
@@ -67,11 +79,23 @@ const Storage = (() => {
   }
 
   async function getStaff() {
+    // キャッシュが有効ならそれを返す
+    if (_staffCache && (Date.now() - _staffCacheTime < STAFF_CACHE_TTL)) {
+      return _staffCache.filter(s => s.active !== false);
+    }
     if (useGas) {
-      try { return normalizeStaff(await gasRequest('getStaff')); }
+      try {
+        const result = normalizeStaff(await gasRequest('getStaff'));
+        _staffCache = result;
+        _staffCacheTime = Date.now();
+        return result;
+      }
       catch (e) { console.warn('GAS getStaff failed:', e.message); }
     }
-    return localGet('staff').filter(s => s.active !== false);
+    const local = localGet('staff').filter(s => s.active !== false);
+    _staffCache = local;
+    _staffCacheTime = Date.now();
+    return local;
   }
 
   async function getAllStaff() {
@@ -83,6 +107,7 @@ const Storage = (() => {
   }
 
   async function saveStaff(staff) {
+    _staffCache = null; // キャッシュ無効化
     if (useGas) {
       try { await gasRequest('saveStaff', { staff }); return; }
       catch (e) { console.warn('GAS saveStaff failed:', e.message); }
@@ -95,6 +120,7 @@ const Storage = (() => {
   }
 
   async function deleteStaff(staffId) {
+    _staffCache = null; // キャッシュ無効化
     if (useGas) {
       try { await gasRequest('deleteStaff', { staffId }); return; }
       catch (e) { console.warn('GAS deleteStaff failed:', e.message); }
@@ -141,6 +167,17 @@ const Storage = (() => {
     const all = localGet('time_records');
     all.push(record);
     localSet('time_records', all);
+  }
+
+  // バックグラウンド版（UIをブロックしない）
+  function addTimeRecordBackground(record) {
+    if (useGas) {
+      gasRequestBackground('addTimeRecord', { record });
+    } else {
+      const all = localGet('time_records');
+      all.push(record);
+      localSet('time_records', all);
+    }
   }
 
   async function updateTimeRecord(record) {
@@ -254,15 +291,16 @@ const Storage = (() => {
     localStorage.removeItem('staff');
     localStorage.removeItem('time_records');
     localStorage.removeItem('shifts');
+    _staffCache = null;
   }
 
   init();
 
   return {
-    init, setGasUrl, getGasUrl, isGasMode,
+    init, setGasUrl, getGasUrl, isGasMode, clearStaffCache,
     getStaff, getAllStaff, saveStaff, deleteStaff,
     getTimeRecords, getTimeRecordsByMonth, getTimeRecordsByRange,
-    addTimeRecord, updateTimeRecord, deleteTimeRecord,
+    addTimeRecord, addTimeRecordBackground, updateTimeRecord, deleteTimeRecord,
     getShifts, saveShift, deleteShift, saveShiftsBulk,
     getSetting, setSetting, getPin, setPin, verifyPin,
     exportAllData, importAllData, resetAllData,

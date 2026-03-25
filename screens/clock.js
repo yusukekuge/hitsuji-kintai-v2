@@ -1,6 +1,8 @@
 // ===== 画面1：打刻画面 =====
 const ClockScreen = (() => {
   let selectedStaffId = null;
+  let cachedStaff = null;
+  let cachedRecords = null;
 
   async function render() {
     const container = document.getElementById('screen-clock');
@@ -9,7 +11,14 @@ const ClockScreen = (() => {
       Storage.getStaff(),
       Storage.getTimeRecords(todayStr)
     ]);
+    cachedStaff = staff;
+    cachedRecords = records;
 
+    renderUI(container, staff, records, todayStr);
+  }
+
+  // UIだけ再描画（データ取得なし＝即座に完了）
+  function renderUI(container, staff, records, todayStr) {
     const statuses = {};
     staff.forEach(s => {
       const sr = records.filter(r => r.staffId === s.id).sort((a, b) => a.time.localeCompare(b.time));
@@ -76,7 +85,10 @@ const ClockScreen = (() => {
     container.querySelectorAll('.staff-btn').forEach(btn => {
       btn.addEventListener('click', () => {
         selectedStaffId = btn.dataset.id;
-        render();
+        // キャッシュからUI再描画（GAS通信なし＝即座）
+        if (cachedStaff && cachedRecords) {
+          renderUI(container, cachedStaff, cachedRecords, Utils.today());
+        }
       });
     });
 
@@ -86,30 +98,40 @@ const ClockScreen = (() => {
   }
 
   async function handleClock(btn, type) {
-    if (!selectedStaffId) return;
+    if (!selectedStaffId || !cachedStaff) return;
+    const s = cachedStaff.find(st => st.id === selectedStaffId);
+    if (!s) return;
 
-    await Utils.withLoading(btn, async () => {
-      const staff = await Storage.getStaff();
-      const s = staff.find(st => st.id === selectedStaffId);
-      if (!s) return;
+    const typeLabels = { clock_in: '出勤', break_start: '休憩開始', break_end: '休憩終了', clock_out: '退勤' };
+    const now = new Date();
+    const timeStr = Utils.formatTime(now);
 
-      const typeLabels = { clock_in: '出勤', break_start: '休憩開始', break_end: '休憩終了', clock_out: '退勤' };
-      const now = new Date();
-      const timeStr = Utils.formatTime(now);
+    // 確認ダイアログ（GAS通信なし＝即表示）
+    const ok = await Utils.showConfirm('打刻確認', `${s.name}さんの${typeLabels[type]}を${timeStr}で記録しますか？`);
+    if (!ok) return;
 
-      const record = {
-        id: Utils.generateId(),
-        staffId: selectedStaffId,
-        date: Utils.today(),
-        type: type,
-        time: now.toISOString(),
-        modified: false
-      };
+    // ボタンをローディング状態に
+    Utils.btnLoading(btn, true);
 
-      await Storage.addTimeRecord(record);
-      Utils.showToast(`${s.name}さん：${typeLabels[type]}（${timeStr}）`, 'success');
-      await render();
-    });
+    const record = {
+      id: Utils.generateId(),
+      staffId: selectedStaffId,
+      date: Utils.today(),
+      type: type,
+      time: now.toISOString(),
+      modified: false
+    };
+
+    // キャッシュにレコード追加してUIを即更新
+    if (cachedRecords) {
+      cachedRecords.push(record);
+      renderUI(document.getElementById('screen-clock'), cachedStaff, cachedRecords, Utils.today());
+    }
+
+    Utils.showToast(`${s.name}さん：${typeLabels[type]}（${timeStr}）`, 'success');
+
+    // GAS保存はバックグラウンド（UIをブロックしない）
+    Storage.addTimeRecordBackground(record);
   }
 
   return { render };
