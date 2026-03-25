@@ -44,9 +44,22 @@ const Storage = (() => {
   }
 
   // ===== スタッフ =====
+  // GASから返る文字列 '0'/'1' をJS型に正規化
+  function normalizeStaff(staffList) {
+    return staffList.map(s => ({
+      ...s,
+      probation: s.probation === true || s.probation === '1' || s.probation === 1,
+      active: s.active !== false && String(s.active) !== '0' && String(s.active) !== 'false',
+      hourlyWage: Number(s.hourlyWage) || 1150,
+      commuteDistance: Number(s.commuteDistance) || 0,
+      otherAllowance: Number(s.otherAllowance) || 0,
+      dependents: Number(s.dependents) || 0
+    }));
+  }
+
   async function getStaff() {
     if (useGas) {
-      try { return await gasRequest('getStaff'); }
+      try { return normalizeStaff(await gasRequest('getStaff')); }
       catch (e) { console.warn('GAS getStaff failed:', e.message); }
     }
     return localGet('staff').filter(s => s.active !== false);
@@ -54,7 +67,7 @@ const Storage = (() => {
 
   async function getAllStaff() {
     if (useGas) {
-      try { return await gasRequest('getAllStaff'); }
+      try { return normalizeStaff(await gasRequest('getAllStaff')); }
       catch (e) { console.warn('GAS getAllStaff failed:', e.message); }
     }
     return localGet('staff');
