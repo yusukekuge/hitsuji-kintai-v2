@@ -79,7 +79,7 @@ const StaffScreen = (() => {
             </div>
           </div>
           <div class="btn-group mt-16">
-            <button type="submit" class="btn btn-primary">${editingId ? '更新' : '登録'}</button>
+            <button type="submit" class="btn btn-primary" id="sf-submit-btn">${editingId ? '更新' : '登録'}</button>
             ${editingId ? '<button type="button" class="btn btn-secondary" id="sf-cancel">キャンセル</button>' : ''}
           </div>
         </form>
@@ -129,10 +129,12 @@ const StaffScreen = (() => {
         const s = activeStaff.find(st => st.id === btn.dataset.id);
         const ok = await Utils.showConfirm('スタッフ削除', `${s ? s.name : ''}さんを削除しますか？`);
         if (ok) {
-          await Storage.deleteStaff(btn.dataset.id);
-          Utils.showToast('スタッフを削除しました');
-          if (editingId === btn.dataset.id) editingId = null;
-          render();
+          await Utils.withLoading(btn, async () => {
+            await Storage.deleteStaff(btn.dataset.id);
+            Utils.showToast('スタッフを削除しました');
+            if (editingId === btn.dataset.id) editingId = null;
+            await render();
+          });
         }
       });
     });
@@ -143,23 +145,26 @@ const StaffScreen = (() => {
     const name = document.getElementById('sf-name').value.trim();
     if (!name) { Utils.showToast('氏名を入力してください', 'error'); return; }
 
-    const staff = {
-      id: editingId || Utils.generateId(),
-      name,
-      hourlyWage: parseInt(document.getElementById('sf-wage').value) || 1150,
-      commuteDistance: parseFloat(document.getElementById('sf-distance').value) || 0,
-      hireDate: document.getElementById('sf-hire-date').value || '',
-      otherAllowance: parseInt(document.getElementById('sf-other').value) || 0,
-      probation: document.getElementById('sf-probation').value === 'true',
-      taxCategory: document.getElementById('sf-tax-category').value || 'kou',
-      dependents: parseInt(document.getElementById('sf-dependents').value) || 0,
-      active: true
-    };
+    const submitBtn = document.getElementById('sf-submit-btn');
+    await Utils.withLoading(submitBtn, async () => {
+      const staff = {
+        id: editingId || Utils.generateId(),
+        name,
+        hourlyWage: parseInt(document.getElementById('sf-wage').value) || 1150,
+        commuteDistance: parseFloat(document.getElementById('sf-distance').value) || 0,
+        hireDate: document.getElementById('sf-hire-date').value || '',
+        otherAllowance: parseInt(document.getElementById('sf-other').value) || 0,
+        probation: document.getElementById('sf-probation').value === 'true',
+        taxCategory: document.getElementById('sf-tax-category').value || 'kou',
+        dependents: parseInt(document.getElementById('sf-dependents').value) || 0,
+        active: true
+      };
 
-    await Storage.saveStaff(staff);
-    Utils.showToast(editingId ? 'スタッフ情報を更新しました' : 'スタッフを登録しました', 'success');
-    editingId = null;
-    render();
+      await Storage.saveStaff(staff);
+      Utils.showToast(editingId ? 'スタッフ情報を更新しました' : 'スタッフを登録しました', 'success');
+      editingId = null;
+      await render();
+    });
   }
 
   return { render };

@@ -85,26 +85,25 @@ const ShiftEditScreen = (() => {
       render();
     });
 
-    document.getElementById('se-save').addEventListener('click', saveShifts);
-  }
+    document.getElementById('se-save').addEventListener('click', function() {
+      Utils.withLoading(this, async () => {
+        const inputs = document.querySelectorAll('.shift-input');
+        const shiftMap = {};
 
-  async function saveShifts() {
-    const inputs = document.querySelectorAll('.shift-input');
-    const shiftMap = {};
+        inputs.forEach(input => {
+          const key = `${input.dataset.staff}_${input.dataset.date}`;
+          if (!shiftMap[key]) {
+            shiftMap[key] = { staffId: input.dataset.staff, date: input.dataset.date, startTime: '', endTime: '' };
+          }
+          if (input.dataset.field === 'start') shiftMap[key].startTime = input.value.trim();
+          if (input.dataset.field === 'end') shiftMap[key].endTime = input.value.trim();
+        });
 
-    inputs.forEach(input => {
-      const key = `${input.dataset.staff}_${input.dataset.date}`;
-      if (!shiftMap[key]) {
-        shiftMap[key] = { staffId: input.dataset.staff, date: input.dataset.date, startTime: '', endTime: '' };
-      }
-      if (input.dataset.field === 'start') shiftMap[key].startTime = input.value.trim();
-      if (input.dataset.field === 'end') shiftMap[key].endTime = input.value.trim();
+        const shifts = Object.values(shiftMap).filter(sh => sh.startTime || sh.endTime);
+        await Storage.saveShiftsBulk(shifts);
+        Utils.showToast('シフトを保存しました', 'success');
+      });
     });
-
-    const shifts = Object.values(shiftMap).filter(sh => sh.startTime || sh.endTime);
-    await Storage.saveShiftsBulk(shifts);
-    Utils.showToast('シフトを保存しました', 'success');
-  }
 
   return { render };
 })();

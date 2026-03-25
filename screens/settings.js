@@ -102,15 +102,19 @@ const SettingsScreen = (() => {
     `;
 
     // === GAS設定 ===
-    document.getElementById('set-gas-save').addEventListener('click', () => {
-      const url = document.getElementById('set-gas-url').value.trim();
-      Storage.setGasUrl(url);
-      Storage.init();
-      Utils.showToast(url ? 'GAS URLを保存しました' : 'GAS URLをクリアしました', 'success');
-      render();
+    document.getElementById('set-gas-save').addEventListener('click', function() {
+      Utils.withLoading(this, async () => {
+        const url = document.getElementById('set-gas-url').value.trim();
+        Storage.setGasUrl(url);
+        Storage.init();
+        Utils.showToast(url ? 'GAS URLを保存しました' : 'GAS URLをクリアしました', 'success');
+        render();
+      });
     });
 
-    document.getElementById('set-gas-test')?.addEventListener('click', async () => {
+    document.getElementById('set-gas-test')?.addEventListener('click', async function() {
+      const btn = this;
+      Utils.btnLoading(btn, true);
       const resultEl = document.getElementById('gas-test-result');
       resultEl.innerHTML = '<span style="color:var(--text-light);">接続テスト中...</span>';
       try {
@@ -128,6 +132,8 @@ const SettingsScreen = (() => {
         }
       } catch (e) {
         resultEl.innerHTML = `<span style="color:var(--danger);">❌ 接続失敗: ${e.message}</span>`;
+      } finally {
+        Utils.btnLoading(btn, false);
       }
     });
 

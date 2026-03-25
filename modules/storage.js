@@ -7,6 +7,14 @@ const Storage = (() => {
   function init() {
     gasUrl = localStorage.getItem('gas_url') || DEFAULT_GAS_URL;
     useGas = gasUrl.length > 0;
+    // GASコールドスタート対策：起動時にウォームアップping送信
+    if (useGas) {
+      fetch(gasUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify({ action: 'ping' })
+      }).catch(() => {});
+    }
   }
 
   function setGasUrl(url) {

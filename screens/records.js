@@ -160,63 +160,68 @@ const RecordsScreen = (() => {
     `;
     modal.classList.add('active');
 
-    // 修正ボタン
+    // 修正ボタン（通常操作→確認ダイアログなし、即実行）
     msgEl.querySelectorAll('.edit-save-btn').forEach(btn => {
-      btn.addEventListener('click', async () => {
+      btn.addEventListener('click', async function() {
         const id = btn.dataset.id;
-        const typeName = typeLabels[btn.dataset.type] || btn.dataset.type;
         const input = msgEl.querySelector(`.edit-time-input[data-id="${id}"]`);
         const timeVal = input.value.trim();
         if (!isValidHHMM(timeVal)) {
           Utils.showToast('時刻はHH:MM形式で入力してください（例: 09:07）', 'error');
           return;
         }
-        if (!confirm(`${typeName}の打刻時間を ${timeVal} に修正しますか？`)) return;
-        const rec = staffRecords.find(r => r.id === id);
-        if (rec) {
-          const [h, m] = timeVal.split(':').map(Number);
-          const newTime = new Date(rec.time);
-          newTime.setHours(h, m, 0, 0);
-          rec.time = newTime.toISOString();
-          rec.modified = true;
-          await Storage.updateTimeRecord(rec);
-          Utils.showToast('打刻時刻を修正しました', 'success');
-          modal.classList.remove('active');
-          render();
-        }
+        await Utils.withLoading(this, async () => {
+          const rec = staffRecords.find(r => r.id === id);
+          if (rec) {
+            const [h, m] = timeVal.split(':').map(Number);
+            const newTime = new Date(rec.time);
+            newTime.setHours(h, m, 0, 0);
+            rec.time = newTime.toISOString();
+            rec.modified = true;
+            await Storage.updateTimeRecord(rec);
+            Utils.showToast('打刻時刻を修正しました', 'success');
+            modal.classList.remove('active');
+            await render();
+          }
+        });
       });
     });
 
-    // 削除ボタン
+    // 削除ボタン（不可逆→確認ダイアログ維持）
     msgEl.querySelectorAll('.edit-delete-btn').forEach(btn => {
-      btn.addEventListener('click', async () => {
+      btn.addEventListener('click', async function() {
         const typeName = typeLabels[btn.dataset.type] || btn.dataset.type;
-        if (!confirm(`${typeName}の打刻を削除しますか？\nこの操作は元に戻せません。`)) return;
-        await Storage.deleteTimeRecord(btn.dataset.id);
-        Utils.showToast('打刻を削除しました');
-        modal.classList.remove('active');
-        render();
+        const ok = await Utils.showConfirm('打刻削除', `${typeName}の打刻を削除しますか？\nこの操作は元に戻せません。`);
+        if (!ok) return;
+        await Utils.withLoading(this, async () => {
+          await Storage.deleteTimeRecord(btn.dataset.id);
+          Utils.showToast('打刻を削除しました');
+          modal.classList.remove('active');
+          await render();
+        });
       });
     });
 
-    // 追加
-    document.getElementById('edit-add-btn')?.addEventListener('click', async () => {
+    // 追加（通常操作→確認ダイアログなし）
+    document.getElementById('edit-add-btn')?.addEventListener('click', async function() {
       const type = document.getElementById('edit-add-type').value;
       const timeVal = document.getElementById('edit-add-time').value.trim();
       if (!isValidHHMM(timeVal)) {
         Utils.showToast('時刻はHH:MM形式で入力してください（例: 09:07）', 'error');
         return;
       }
-      const [h, m] = timeVal.split(':').map(Number);
-      const newTime = new Date(date);
-      newTime.setHours(h, m, 0, 0);
-      await Storage.addTimeRecord({
-        id: Utils.generateId(), staffId, date, type,
-        time: newTime.toISOString(), modified: true
+      await Utils.withLoading(this, async () => {
+        const [h, m] = timeVal.split(':').map(Number);
+        const newTime = new Date(date);
+        newTime.setHours(h, m, 0, 0);
+        await Storage.addTimeRecord({
+          id: Utils.generateId(), staffId, date, type,
+          time: newTime.toISOString(), modified: true
+        });
+        Utils.showToast('打刻を追加しました', 'success');
+        modal.classList.remove('active');
+        await render();
       });
-      Utils.showToast('打刻を追加しました', 'success');
-      modal.classList.remove('active');
-      render();
     });
 
     // OKボタンでモーダル閉じる

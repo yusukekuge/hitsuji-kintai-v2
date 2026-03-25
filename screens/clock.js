@@ -81,35 +81,35 @@ const ClockScreen = (() => {
     });
 
     container.querySelectorAll('.clock-actions .btn').forEach(btn => {
-      btn.addEventListener('click', () => handleClock(btn.dataset.type));
+      btn.addEventListener('click', () => handleClock(btn, btn.dataset.type));
     });
   }
 
-  async function handleClock(type) {
+  async function handleClock(btn, type) {
     if (!selectedStaffId) return;
-    const staff = await Storage.getStaff();
-    const s = staff.find(st => st.id === selectedStaffId);
-    if (!s) return;
 
-    const typeLabels = { clock_in: '出勤', break_start: '休憩開始', break_end: '休憩終了', clock_out: '退勤' };
-    const now = new Date();
-    const timeStr = Utils.formatTime(now);
+    await Utils.withLoading(btn, async () => {
+      const staff = await Storage.getStaff();
+      const s = staff.find(st => st.id === selectedStaffId);
+      if (!s) return;
 
-    const ok = await Utils.showConfirm('打刻確認', `${s.name}さんの${typeLabels[type]}を${timeStr}で記録しますか？`);
-    if (!ok) return;
+      const typeLabels = { clock_in: '出勤', break_start: '休憩開始', break_end: '休憩終了', clock_out: '退勤' };
+      const now = new Date();
+      const timeStr = Utils.formatTime(now);
 
-    const record = {
-      id: Utils.generateId(),
-      staffId: selectedStaffId,
-      date: Utils.today(),
-      type: type,
-      time: now.toISOString(),
-      modified: false
-    };
+      const record = {
+        id: Utils.generateId(),
+        staffId: selectedStaffId,
+        date: Utils.today(),
+        type: type,
+        time: now.toISOString(),
+        modified: false
+      };
 
-    await Storage.addTimeRecord(record);
-    Utils.showToast(`${s.name}さん：${typeLabels[type]}（${timeStr}）`, 'success');
-    render();
+      await Storage.addTimeRecord(record);
+      Utils.showToast(`${s.name}さん：${typeLabels[type]}（${timeStr}）`, 'success');
+      await render();
+    });
   }
 
   return { render };

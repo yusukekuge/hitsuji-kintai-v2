@@ -102,19 +102,23 @@ const PayrollScreen = (() => {
       render();
     });
 
-    document.getElementById('pay-all-pdf').addEventListener('click', () => generateAllPayslipsPDF(payrolls, period));
+    document.getElementById('pay-all-pdf').addEventListener('click', function() {
+      Utils.withLoading(this, () => generateAllPayslipsPDF(payrolls, period));
+    });
     document.getElementById('pay-all-print').addEventListener('click', () => {
       document.querySelectorAll('.screen').forEach(s => s.classList.remove('print-target'));
       container.classList.add('print-target');
       window.print();
       container.classList.remove('print-target');
     });
-    document.getElementById('pay-csv-export').addEventListener('click', () => exportPayrollCSV(payrolls, period));
+    document.getElementById('pay-csv-export').addEventListener('click', function() {
+      Utils.withLoading(this, async () => exportPayrollCSV(payrolls, period));
+    });
 
     container.querySelectorAll('.payslip-pdf-btn').forEach(btn => {
-      btn.addEventListener('click', () => {
+      btn.addEventListener('click', function() {
         const p = payrolls.find(pay => pay.staffId === btn.dataset.staff);
-        if (p) generateSinglePayslipPDF(p, period);
+        if (p) Utils.withLoading(this, () => generateSinglePayslipPDF(p, period));
       });
     });
   }

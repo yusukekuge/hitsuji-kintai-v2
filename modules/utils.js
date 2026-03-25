@@ -112,6 +112,29 @@ const Utils = (() => {
     });
   }
 
+  // ボタンローディング状態の管理
+  function btnLoading(btn, loading = true) {
+    if (!btn) return;
+    if (loading) {
+      btn.classList.add('is-loading');
+      btn.disabled = true;
+    } else {
+      btn.classList.remove('is-loading');
+      btn.disabled = false;
+    }
+  }
+
+  // ボタンを押した際のラッパー（ローディング + 二重送信防止）
+  async function withLoading(btn, asyncFn) {
+    if (!btn || btn.disabled) return;
+    btnLoading(btn, true);
+    try {
+      await asyncFn();
+    } finally {
+      btnLoading(btn, false);
+    }
+  }
+
   // HTML エスケープ
   function escapeHtml(str) {
     const div = document.createElement('div');
@@ -139,6 +162,6 @@ const Utils = (() => {
     timeToDate, minutesToHM, minutesToHMJP, formatCurrency,
     generateId, getDaysInMonth, getDayOfWeek, DAY_NAMES,
     today, now, diffMinutes, showToast, showConfirm, escapeHtml,
-    getPayPeriod, isDateInRange
+    getPayPeriod, isDateInRange, btnLoading, withLoading
   };
 })();

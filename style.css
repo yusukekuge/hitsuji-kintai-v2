@@ -694,6 +694,34 @@ td.num { text-align: right; font-variant-numeric: tabular-nums; }
   font-weight: 500;
 }
 
+/* ===== ボタンローディング状態 ===== */
+.btn.is-loading {
+  position: relative;
+  color: transparent !important;
+  pointer-events: none;
+}
+.btn.is-loading::after {
+  content: '';
+  position: absolute;
+  width: 16px; height: 16px;
+  top: 50%; left: 50%;
+  margin: -8px 0 0 -8px;
+  border: 2px solid rgba(255,255,255,0.4);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: spin 0.6s linear infinite;
+}
+.btn.is-loading.btn-secondary::after,
+.btn.is-loading.btn-sm::after {
+  width: 14px; height: 14px;
+  margin: -7px 0 0 -7px;
+}
+.clock-btn.is-loading::after {
+  width: 24px; height: 24px;
+  margin: -12px 0 0 -12px;
+  border-width: 3px;
+}
+
 /* ===== ユーティリティ ===== */
 .text-center { text-align: center; }
 .text-right { text-align: right; }
