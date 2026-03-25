@@ -1,10 +1,11 @@
 // ===== データ保存モジュール（GAS連携 + localStorageフォールバック） =====
 const Storage = (() => {
-  let gasUrl = localStorage.getItem('gas_url') || '';
+  const DEFAULT_GAS_URL = 'https://script.google.com/macros/s/AKfycbzO2IC99lGUsAIot97WYVXUpyY7fcL5dSiS_zf4OzKWzFRmWeHt1agu5bBtRsUhqqhz_w/exec';
+  let gasUrl = localStorage.getItem('gas_url') || DEFAULT_GAS_URL;
   let useGas = false;
 
   function init() {
-    gasUrl = localStorage.getItem('gas_url') || '';
+    gasUrl = localStorage.getItem('gas_url') || DEFAULT_GAS_URL;
     useGas = gasUrl.length > 0;
   }
 
