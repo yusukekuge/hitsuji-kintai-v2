@@ -104,6 +104,7 @@ const ShiftEditScreen = (() => {
         Utils.showToast('シフトを保存しました', 'success');
       });
     });
+  }
 
   return { render };
 })();

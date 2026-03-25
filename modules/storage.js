@@ -7,14 +7,6 @@ const Storage = (() => {
   function init() {
     gasUrl = localStorage.getItem('gas_url') || DEFAULT_GAS_URL;
     useGas = gasUrl.length > 0;
-    // GASコールドスタート対策：起動時にウォームアップping送信
-    if (useGas) {
-      fetch(gasUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-        body: JSON.stringify({ action: 'ping' })
-      }).catch(() => {});
-    }
   }
 
   function setGasUrl(url) {
@@ -25,17 +17,26 @@ const Storage = (() => {
   function getGasUrl() { return gasUrl; }
   function isGasMode() { return useGas; }
 
-  // --- GAS通信 ---
+  // --- GAS通信（15秒タイムアウト付き） ---
   async function gasRequest(action, data = {}) {
     const payload = { action, ...data };
-    const res = await fetch(gasUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify(payload)
-    });
-    const json = await res.json();
-    if (json.error) throw new Error(json.error);
-    return json.data !== undefined ? json.data : json;
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 15000);
+    try {
+      const res = await fetch(gasUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify(payload),
+        signal: controller.signal
+      });
+      clearTimeout(timeoutId);
+      const json = await res.json();
+      if (json.error) throw new Error(json.error);
+      return json.data !== undefined ? json.data : json;
+    } catch (e) {
+      clearTimeout(timeoutId);
+      throw e;
+    }
   }
 
   // --- ローカルストレージ操作 ---
