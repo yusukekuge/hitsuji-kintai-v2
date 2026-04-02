@@ -1,6 +1,7 @@
 // ===== 画面4：勤務記録一覧 =====
 const RecordsScreen = (() => {
   let currentYear, currentMonth, filterStaffId = 'all';
+  let activeTab = 'records'; // 'records' or 'history'
 
   function init() {
     const now = new Date();
@@ -30,6 +31,37 @@ const RecordsScreen = (() => {
       });
     }
 
+    // 打刻履歴データ
+    const typeLabelsHistory = { clock_in: '出勤', break_start: '休憩開始', break_end: '休憩終了', clock_out: '退勤' };
+    const typeBadgeClass = { clock_in: 'badge-success', break_start: 'badge-warning', break_end: 'badge-info', clock_out: 'badge-danger' };
+    let historyHTML = '';
+    if (filterStaffId === 'all') {
+      historyHTML = '<p style="color:var(--text-light);text-align:center;padding:20px;">スタッフを選択してください</p>';
+    } else {
+      const staffHistory = records.filter(r => r.staffId === filterStaffId)
+        .sort((a, b) => a.date.localeCompare(b.date) || a.time.localeCompare(b.time));
+      if (staffHistory.length === 0) {
+        historyHTML = '<p style="color:var(--text-light);text-align:center;padding:20px;">打刻履歴がありません</p>';
+      } else {
+        historyHTML = `
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>日付</th><th>打刻種別</th><th>打刻時刻</th></tr></thead>
+              <tbody>
+                ${staffHistory.map(r => `
+                  <tr>
+                    <td>${Utils.formatDateJP(r.date)}</td>
+                    <td><span class="badge ${typeBadgeClass[r.type] || ''}">${typeLabelsHistory[r.type] || r.type}</span></td>
+                    <td>${Utils.formatTime(r.time)}</td>
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>
+          </div>
+        `;
+      }
+    }
+
     container.innerHTML = `
       <div class="card">
         <h3 class="card-title">勤務記録一覧</h3>
@@ -48,27 +80,38 @@ const RecordsScreen = (() => {
           </div>
         </div>
 
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr><th>日付</th><th>スタッフ</th><th>出勤</th><th>退勤</th><th>休憩</th><th>実働</th><th>深夜</th><th>操作</th></tr>
-            </thead>
-            <tbody>
-              ${dayData.length === 0 ? '<tr><td colspan="8" style="text-align:center;color:var(--text-light);">記録がありません</td></tr>' : ''}
-              ${dayData.map(dw => `
-                <tr>
-                  <td>${Utils.formatDateJP(dw.date)}</td>
-                  <td>${Utils.escapeHtml(dw.staffName)}</td>
-                  <td>${dw.clockIn ? Utils.formatTime(dw.clockIn) : '-'}</td>
-                  <td>${dw.clockOut ? Utils.formatTime(dw.clockOut) : '-'}</td>
-                  <td class="num">${dw.breakMinutes > 0 ? Utils.minutesToHM(dw.breakMinutes) : '-'}</td>
-                  <td class="num">${dw.isComplete ? Utils.minutesToHM(dw.workMinutes) : '-'}</td>
-                  <td class="num">${dw.nightMinutes > 0 ? Utils.minutesToHM(dw.nightMinutes) : '-'}</td>
-                  <td><button class="btn btn-sm btn-secondary rec-edit-btn" data-staff="${dw.staffId}" data-date="${dw.date}">修正</button></td>
-                </tr>
-              `).join('')}
-            </tbody>
-          </table>
+        <div class="tab-nav">
+          <button class="tab-btn ${activeTab === 'records' ? 'active' : ''}" data-tab="records">勤務記録</button>
+          <button class="tab-btn ${activeTab === 'history' ? 'active' : ''}" data-tab="history">打刻履歴</button>
+        </div>
+
+        <div class="tab-content ${activeTab === 'records' ? 'active' : ''}" id="tab-records">
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr><th>日付</th><th>スタッフ</th><th>出勤</th><th>退勤</th><th>休憩</th><th>実働</th><th>深夜</th><th>操作</th></tr>
+              </thead>
+              <tbody>
+                ${dayData.length === 0 ? '<tr><td colspan="8" style="text-align:center;color:var(--text-light);">記録がありません</td></tr>' : ''}
+                ${dayData.map(dw => `
+                  <tr>
+                    <td>${Utils.formatDateJP(dw.date)}</td>
+                    <td>${Utils.escapeHtml(dw.staffName)}</td>
+                    <td>${dw.clockIn ? Utils.formatTime(dw.clockIn) : '-'}</td>
+                    <td>${dw.clockOut ? Utils.formatTime(dw.clockOut) : '-'}</td>
+                    <td class="num">${dw.breakMinutes > 0 ? Utils.minutesToHM(dw.breakMinutes) : '-'}</td>
+                    <td class="num">${dw.isComplete ? Utils.minutesToHM(dw.workMinutes) : '-'}</td>
+                    <td class="num">${dw.nightMinutes > 0 ? Utils.minutesToHM(dw.nightMinutes) : '-'}</td>
+                    <td><button class="btn btn-sm btn-secondary rec-edit-btn" data-staff="${dw.staffId}" data-date="${dw.date}">修正</button></td>
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="tab-content ${activeTab === 'history' ? 'active' : ''}" id="tab-history">
+          ${historyHTML}
         </div>
       </div>
     `;
@@ -86,6 +129,14 @@ const RecordsScreen = (() => {
     document.getElementById('rec-staff-filter').addEventListener('change', (e) => {
       filterStaffId = e.target.value;
       render();
+    });
+
+    container.querySelectorAll('.tab-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        activeTab = btn.dataset.tab;
+        container.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === activeTab));
+        container.querySelectorAll('.tab-content').forEach(c => c.classList.toggle('active', c.id === 'tab-' + activeTab));
+      });
     });
 
     container.querySelectorAll('.rec-edit-btn').forEach(btn => {
