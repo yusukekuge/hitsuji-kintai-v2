@@ -72,6 +72,20 @@ const ShiftEditScreen = (() => {
           </div>
         </div>
       </div>
+
+      ${staff.length > 0 ? `
+        <div class="card">
+          <h3 class="card-title">月次集計（${currentYear}年${currentMonth + 1}月）</h3>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr><th>スタッフ</th><th>出勤日数</th><th>合計勤務時間</th><th>時給</th><th>給与見込み</th><th>扶養ステータス</th></tr>
+              </thead>
+              <tbody id="se-summary-body"></tbody>
+            </table>
+          </div>
+        </div>
+      ` : ''}
     `;
 
     document.getElementById('se-prev').addEventListener('click', () => {
@@ -103,6 +117,39 @@ const ShiftEditScreen = (() => {
         await Storage.saveShiftsBulk(shifts);
         Utils.showToast('シフトを保存しました', 'success');
       });
+    });
+
+    // 月次集計のリアルタイム更新
+    function updateSummary() {
+      const summaryBody = document.getElementById('se-summary-body');
+      if (!summaryBody) return;
+      const inputs = container.querySelectorAll('.shift-input');
+      const shiftMap = {};
+      inputs.forEach(input => {
+        const key = `${input.dataset.staff}_${input.dataset.date}`;
+        if (!shiftMap[key]) {
+          shiftMap[key] = { staffId: input.dataset.staff, date: input.dataset.date, startTime: '', endTime: '' };
+        }
+        if (input.dataset.field === 'start') shiftMap[key].startTime = input.value.trim();
+        if (input.dataset.field === 'end') shiftMap[key].endTime = input.value.trim();
+      });
+      const currentShifts = Object.values(shiftMap).filter(sh => sh.startTime || sh.endTime);
+      const summary = Calc.calcShiftMonthlySummary(staff, currentShifts);
+      summaryBody.innerHTML = summary.map(s => `
+        <tr>
+          <td>${Utils.escapeHtml(s.name)}</td>
+          <td class="num">${s.shiftDays}日</td>
+          <td class="num">${Utils.minutesToHM(s.totalMinutes)}</td>
+          <td class="num">${Utils.formatCurrency(s.wage)}</td>
+          <td class="num">${Utils.formatCurrency(s.estimatedPay)}</td>
+          <td><span class="badge ${s.statusClass}">${s.statusLabel}</span></td>
+        </tr>
+      `).join('');
+    }
+
+    updateSummary();
+    container.querySelectorAll('.shift-input').forEach(input => {
+      input.addEventListener('input', updateSummary);
     });
   }
 

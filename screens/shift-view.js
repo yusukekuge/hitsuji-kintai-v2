@@ -71,6 +71,34 @@ const ShiftViewScreen = (() => {
           </div>
         </div>
       </div>
+
+      ${staff.length > 0 ? (() => {
+        const summary = Calc.calcShiftMonthlySummary(staff, shifts);
+        return `
+          <div class="card no-print">
+            <h3 class="card-title">月次集計（${currentYear}年${currentMonth + 1}月）</h3>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr><th>スタッフ</th><th>出勤日数</th><th>合計勤務時間</th><th>時給</th><th>給与見込み</th><th>扶養ステータス</th></tr>
+                </thead>
+                <tbody>
+                  ${summary.map(s => `
+                    <tr>
+                      <td>${Utils.escapeHtml(s.name)}</td>
+                      <td class="num">${s.shiftDays}日</td>
+                      <td class="num">${Utils.minutesToHM(s.totalMinutes)}</td>
+                      <td class="num">${Utils.formatCurrency(s.wage)}</td>
+                      <td class="num">${Utils.formatCurrency(s.estimatedPay)}</td>
+                      <td><span class="badge ${s.statusClass}">${s.statusLabel}</span></td>
+                    </tr>
+                  `).join('')}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        `;
+      })() : ''}
     `;
 
     document.getElementById('sv-prev').addEventListener('click', () => {

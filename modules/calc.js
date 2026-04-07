@@ -530,6 +530,45 @@ const Calc = (() => {
     return warnings;
   }
 
+  // シフトデータから勤務時間を計算（HH:MM文字列 → 分）
+  function calcShiftMinutes(startTime, endTime) {
+    if (!startTime || !endTime) return 0;
+    const [sh, sm] = startTime.split(':').map(Number);
+    const [eh, em] = endTime.split(':').map(Number);
+    if (isNaN(sh) || isNaN(sm) || isNaN(eh) || isNaN(em)) return 0;
+    let total = (eh * 60 + em) - (sh * 60 + sm);
+    if (total <= 0) return 0;
+    const breakMin = getAutoBreakMinutes(total);
+    return Math.max(0, total - breakMin);
+  }
+
+  // スタッフ別シフト月次集計
+  function calcShiftMonthlySummary(staffList, shifts) {
+    return staffList.map(s => {
+      const staffShifts = shifts.filter(sh => sh.staffId === s.id);
+      let totalMinutes = 0;
+      let shiftDays = 0;
+      staffShifts.forEach(sh => {
+        const mins = calcShiftMinutes(sh.startTime, sh.endTime);
+        if (mins > 0) {
+          totalMinutes += mins;
+          shiftDays++;
+        }
+      });
+      const wage = s.probation ? DEFAULTS.probationWage : (s.hourlyWage || DEFAULTS.hourlyWage);
+      const estimatedPay = Math.floor(wage * totalMinutes / 60);
+      let statusClass, statusLabel;
+      if (estimatedPay < 85000) {
+        statusClass = 'badge-success'; statusLabel = '余裕あり';
+      } else if (estimatedPay < 103000) {
+        statusClass = 'badge-warning'; statusLabel = '注意';
+      } else {
+        statusClass = 'badge-danger'; statusLabel = '要確認';
+      }
+      return { staffId: s.id, name: s.name, wage, shiftDays, totalMinutes, estimatedPay, statusClass, statusLabel };
+    });
+  }
+
   return {
     DEFAULTS,
     getAutoBreakMinutes,
@@ -539,6 +578,8 @@ const Calc = (() => {
     calcDependentWarning,
     calcIncomeTax,
     calcTaxKou,
-    calcTaxOtsu
+    calcTaxOtsu,
+    calcShiftMinutes,
+    calcShiftMonthlySummary
   };
 })();
