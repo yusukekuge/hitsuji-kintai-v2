@@ -34,6 +34,13 @@ const RecordsScreen = (() => {
     // 打刻履歴データ
     const typeLabelsHistory = { clock_in: '出勤', break_start: '休憩開始', break_end: '休憩終了', clock_out: '退勤' };
     const typeBadgeClass = { clock_in: 'badge-success', break_start: 'badge-warning', break_end: 'badge-info', clock_out: 'badge-danger' };
+
+    function toHHMM(timeStr) {
+      const d = new Date(timeStr);
+      if (isNaN(d.getTime())) return '00:00';
+      return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+    }
+
     let historyHTML = '';
     if (filterStaffId === 'all') {
       historyHTML = '<p style="color:var(--text-light);text-align:center;padding:20px;">スタッフを選択してください</p>';
@@ -46,17 +53,31 @@ const RecordsScreen = (() => {
         historyHTML = `
           <div class="table-wrap">
             <table>
-              <thead><tr><th>日付</th><th>打刻種別</th><th>打刻時刻</th></tr></thead>
+              <thead><tr><th>日付</th><th>打刻種別</th><th>打刻時刻</th><th style="width:120px;">操作</th></tr></thead>
               <tbody>
                 ${staffHistory.map(r => `
-                  <tr>
+                  <tr data-record-id="${r.id}">
                     <td>${Utils.formatDateJP(r.date)}</td>
                     <td><span class="badge ${typeBadgeClass[r.type] || ''}">${typeLabelsHistory[r.type] || r.type}</span></td>
-                    <td>${Utils.formatTime(r.time)}</td>
+                    <td class="hist-time-cell">${Utils.formatTime(r.time)}</td>
+                    <td style="white-space:nowrap;">
+                      <button class="btn btn-sm btn-secondary hist-edit-btn" data-id="${r.id}" data-time="${toHHMM(r.time)}">編集</button>
+                      <button class="btn btn-sm btn-danger hist-delete-btn" data-id="${r.id}" data-type="${r.type}" style="margin-left:4px;">削除</button>
+                    </td>
                   </tr>
                 `).join('')}
               </tbody>
             </table>
+          </div>
+          <div style="margin-top:12px;text-align:right;">
+            <button class="btn btn-sm btn-primary" id="hist-add-btn">打刻追加</button>
+          </div>
+        `;
+      }
+      if (staffHistory.length === 0) {
+        historyHTML += `
+          <div style="margin-top:12px;text-align:right;">
+            <button class="btn btn-sm btn-primary" id="hist-add-btn">打刻追加</button>
           </div>
         `;
       }
@@ -142,6 +163,134 @@ const RecordsScreen = (() => {
     container.querySelectorAll('.rec-edit-btn').forEach(btn => {
       btn.addEventListener('click', () => editRecord(btn.dataset.staff, btn.dataset.date));
     });
+
+    // --- 打刻履歴タブ：インライン編集 ---
+    container.querySelectorAll('.hist-edit-btn').forEach(btn => {
+      btn.addEventListener('click', function() {
+        const row = container.querySelector(`tr[data-record-id="${btn.dataset.id}"]`);
+        const timeCell = row.querySelector('.hist-time-cell');
+        const origTime = btn.dataset.time;
+        timeCell.innerHTML = `<input type="text" class="form-input hist-time-input" value="${origTime}" pattern="[0-9]{2}:[0-9]{2}" placeholder="HH:MM" maxlength="5" style="width:80px;padding:4px 6px;font-size:14px;text-align:center;">`;
+        const actionsCell = row.querySelector('td:last-child');
+        actionsCell.innerHTML = `
+          <button class="btn btn-sm btn-primary hist-save-btn" data-id="${btn.dataset.id}">保存</button>
+          <button class="btn btn-sm btn-secondary hist-cancel-btn" data-id="${btn.dataset.id}" data-orig="${origTime}" style="margin-left:4px;">戻す</button>
+        `;
+        timeCell.querySelector('input').focus();
+
+        actionsCell.querySelector('.hist-save-btn').addEventListener('click', async function() {
+          const input = timeCell.querySelector('.hist-time-input');
+          const timeVal = input.value.trim();
+          if (!/^([01]\d|2[0-3]):([0-5]\d)$/.test(timeVal)) {
+            Utils.showToast('時刻はHH:MM形式で入力してください', 'error');
+            return;
+          }
+          await Utils.withLoading(this, async () => {
+            const rec = records.find(r => r.id === btn.dataset.id);
+            if (rec) {
+              const [h, m] = timeVal.split(':').map(Number);
+              const newTime = new Date(rec.time);
+              newTime.setHours(h, m, 0, 0);
+              rec.time = newTime.toISOString();
+              rec.modified = true;
+              await Storage.updateTimeRecord(rec);
+              Utils.showToast('打刻時刻を修正しました', 'success');
+              await render();
+            }
+          });
+        });
+
+        actionsCell.querySelector('.hist-cancel-btn').addEventListener('click', () => render());
+      });
+    });
+
+    // --- 打刻履歴タブ：削除 ---
+    container.querySelectorAll('.hist-delete-btn').forEach(btn => {
+      btn.addEventListener('click', async function() {
+        const typeName = typeLabelsHistory[btn.dataset.type] || btn.dataset.type;
+        const ok = await Utils.showConfirm('打刻削除', `${typeName}の打刻を削除しますか？\nこの操作は元に戻せません。`);
+        if (!ok) return;
+        await Utils.withLoading(this, async () => {
+          await Storage.deleteTimeRecord(btn.dataset.id);
+          Utils.showToast('打刻を削除しました');
+          await render();
+        });
+      });
+    });
+
+    // --- 打刻履歴タブ：打刻追加 ---
+    document.getElementById('hist-add-btn')?.addEventListener('click', () => {
+      showHistoryAddModal(staff, records);
+    });
+  }
+
+  function showHistoryAddModal(staff, records) {
+    const modal = document.getElementById('confirm-modal');
+    document.getElementById('confirm-title').textContent = '打刻追加';
+    const msgEl = document.getElementById('confirm-message');
+    const selectedStaff = staff.find(s => s.id === filterStaffId);
+    const todayStr = `${currentYear}-${String(currentMonth + 1).padStart(2, '0')}-01`;
+
+    msgEl.innerHTML = `
+      <div style="text-align:left;">
+        <div class="form-group">
+          <label class="form-label">スタッフ</label>
+          <input type="text" class="form-input" value="${selectedStaff ? Utils.escapeHtml(selectedStaff.name) : ''}" disabled style="background:var(--bg);">
+        </div>
+        <div class="form-group">
+          <label class="form-label">日付</label>
+          <input type="date" class="form-input" id="hist-add-date" value="${todayStr}">
+        </div>
+        <div class="form-group">
+          <label class="form-label">打刻種別</label>
+          <select class="form-select" id="hist-add-type">
+            <option value="clock_in">出勤</option>
+            <option value="break_start">休憩開始</option>
+            <option value="break_end">休憩終了</option>
+            <option value="clock_out">退勤</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">時刻（HH:MM）</label>
+          <input type="text" class="form-input" id="hist-add-time" pattern="[0-9]{2}:[0-9]{2}" placeholder="09:00" maxlength="5" style="width:120px;text-align:center;font-size:16px;">
+        </div>
+      </div>
+    `;
+    modal.classList.add('active');
+
+    const okBtn = document.getElementById('confirm-ok');
+    const cancelBtn = document.getElementById('confirm-cancel');
+
+    async function onOk() {
+      const dateVal = document.getElementById('hist-add-date').value;
+      const typeVal = document.getElementById('hist-add-type').value;
+      const timeVal = document.getElementById('hist-add-time').value.trim();
+      if (!dateVal) { Utils.showToast('日付を入力してください', 'error'); return; }
+      if (!/^([01]\d|2[0-3]):([0-5]\d)$/.test(timeVal)) {
+        Utils.showToast('時刻はHH:MM形式で入力してください', 'error');
+        return;
+      }
+      await Utils.withLoading(okBtn, async () => {
+        const [h, m] = timeVal.split(':').map(Number);
+        const newTime = new Date(dateVal);
+        newTime.setHours(h, m, 0, 0);
+        await Storage.addTimeRecord({
+          id: Utils.generateId(), staffId: filterStaffId, date: dateVal, type: typeVal,
+          time: newTime.toISOString(), modified: true
+        });
+        Utils.showToast('打刻を追加しました', 'success');
+        cleanup();
+        await render();
+      });
+    }
+    function onCancel() { cleanup(); }
+    function cleanup() {
+      modal.classList.remove('active');
+      okBtn.removeEventListener('click', onOk);
+      cancelBtn.removeEventListener('click', onCancel);
+    }
+    okBtn.addEventListener('click', onOk);
+    cancelBtn.addEventListener('click', onCancel);
   }
 
   async function editRecord(staffId, date) {
