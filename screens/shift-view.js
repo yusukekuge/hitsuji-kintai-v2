@@ -60,7 +60,7 @@ const ShiftViewScreen = (() => {
                   const isToday = h.dateStr === todayStr;
                   return `
                     <div class="shift-cell ${isToday ? 'today' : ''} ${h.dow === 0 ? 'sunday' : h.dow === 6 ? 'saturday' : ''}">
-                      ${sh && sh.startTime ? `<div class="shift-time">${sh.startTime}<br>${sh.endTime || ''}</div>` : ''}
+                      ${sh && sh.startTime === '休み' ? `<div class="shift-off-display">休み</div>` : sh && sh.startTime ? `<div class="shift-time">${sh.startTime}<br>${sh.endTime || ''}</div>` : ''}
                     </div>
                   `;
                 }).join('')}

@@ -56,12 +56,17 @@ const ShiftEditScreen = (() => {
                 ${dateHeaders.map(h => {
                   const sh = staffShifts[h.dateStr];
                   const isToday = h.dateStr === todayStr;
+                  const isOff = sh && sh.startTime === '休み';
                   return `
                     <div class="shift-cell ${isToday ? 'today' : ''} ${h.dow === 0 ? 'sunday' : h.dow === 6 ? 'saturday' : ''}">
-                      <input type="text" class="shift-input" data-staff="${s.id}" data-date="${h.dateStr}" data-field="start"
-                        value="${sh ? sh.startTime || '' : ''}" placeholder="--:--" maxlength="5">
-                      <input type="text" class="shift-input" data-staff="${s.id}" data-date="${h.dateStr}" data-field="end"
-                        value="${sh ? sh.endTime || '' : ''}" placeholder="--:--" maxlength="5">
+                      <div class="shift-inputs${isOff ? ' hidden' : ''}" data-staff="${s.id}" data-date="${h.dateStr}">
+                        <input type="text" class="shift-input" data-staff="${s.id}" data-date="${h.dateStr}" data-field="start"
+                          value="${sh && !isOff ? sh.startTime || '' : ''}" placeholder="--:--" maxlength="5">
+                        <input type="text" class="shift-input" data-staff="${s.id}" data-date="${h.dateStr}" data-field="end"
+                          value="${sh && !isOff ? sh.endTime || '' : ''}" placeholder="--:--" maxlength="5">
+                      </div>
+                      <div class="shift-off-label${isOff ? '' : ' hidden'}" data-staff="${s.id}" data-date="${h.dateStr}">休み</div>
+                      <button type="button" class="shift-off-btn${isOff ? ' active' : ''}" data-staff="${s.id}" data-date="${h.dateStr}">休</button>
                     </div>
                   `;
                 }).join('')}
@@ -101,7 +106,7 @@ const ShiftEditScreen = (() => {
 
     document.getElementById('se-save').addEventListener('click', function() {
       Utils.withLoading(this, async () => {
-        const inputs = document.querySelectorAll('.shift-input');
+        const inputs = container.querySelectorAll('.shift-input');
         const shiftMap = {};
 
         inputs.forEach(input => {
@@ -113,9 +118,34 @@ const ShiftEditScreen = (() => {
           if (input.dataset.field === 'end') shiftMap[key].endTime = input.value.trim();
         });
 
+        container.querySelectorAll('.shift-off-btn.active').forEach(btn => {
+          const key = `${btn.dataset.staff}_${btn.dataset.date}`;
+          shiftMap[key] = { staffId: btn.dataset.staff, date: btn.dataset.date, startTime: '休み', endTime: '' };
+        });
+
         const shifts = Object.values(shiftMap).filter(sh => sh.startTime || sh.endTime);
         await Storage.saveShiftsBulk(shifts);
         Utils.showToast('シフトを保存しました', 'success');
+      });
+    });
+
+    // 「休」ボタンのトグル処理
+    container.querySelectorAll('.shift-off-btn').forEach(btn => {
+      btn.addEventListener('click', function() {
+        const staffId = this.dataset.staff;
+        const date = this.dataset.date;
+        const inputsDiv = container.querySelector(`.shift-inputs[data-staff="${staffId}"][data-date="${date}"]`);
+        const label = container.querySelector(`.shift-off-label[data-staff="${staffId}"][data-date="${date}"]`);
+        const isActive = this.classList.toggle('active');
+        if (isActive) {
+          inputsDiv.classList.add('hidden');
+          label.classList.remove('hidden');
+          inputsDiv.querySelectorAll('.shift-input').forEach(i => { i.value = ''; });
+        } else {
+          inputsDiv.classList.remove('hidden');
+          label.classList.add('hidden');
+        }
+        updateSummary();
       });
     });
 
@@ -133,7 +163,11 @@ const ShiftEditScreen = (() => {
         if (input.dataset.field === 'start') shiftMap[key].startTime = input.value.trim();
         if (input.dataset.field === 'end') shiftMap[key].endTime = input.value.trim();
       });
-      const currentShifts = Object.values(shiftMap).filter(sh => sh.startTime || sh.endTime);
+      container.querySelectorAll('.shift-off-btn.active').forEach(btn => {
+        const key = `${btn.dataset.staff}_${btn.dataset.date}`;
+        shiftMap[key] = { staffId: btn.dataset.staff, date: btn.dataset.date, startTime: '休み', endTime: '' };
+      });
+      const currentShifts = Object.values(shiftMap).filter(sh => sh.startTime && sh.startTime !== '休み');
       const summary = Calc.calcShiftMonthlySummary(staff, currentShifts);
       summaryBody.innerHTML = summary.map(s => `
         <tr>
