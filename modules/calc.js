@@ -165,12 +165,11 @@ const Calc = (() => {
       }
     });
 
-    // 基本給（通常時間 = 総労働 - 残業）
-    const normalMinutes = totalWorkMinutes - totalOvertimeMinutes;
-    const basePay = Math.floor(wage * normalMinutes / 60);
+    // 基本給（全労働時間 × 時給）
+    const basePay = Math.floor(wage * totalWorkMinutes / 60);
 
-    // 残業代（法定超25%）
-    const overtimePay = Math.floor(wage * (1 + DEFAULTS.overtimeRate) * totalOvertimeMinutes / 60);
+    // 残業代（割増分のみ：時給 × 25% × 残業時間）
+    const overtimePay = Math.floor(wage * DEFAULTS.overtimeRate * totalOvertimeMinutes / 60);
 
     // 深夜割増（25%）
     const nightPay = Math.floor(wage * DEFAULTS.nightRate * totalNightMinutes / 60);
@@ -198,7 +197,6 @@ const Calc = (() => {
       wage,
       workDays,
       totalWorkMinutes,
-      normalMinutes,
       totalNightMinutes,
       totalOvertimeMinutes,
       basePay,
