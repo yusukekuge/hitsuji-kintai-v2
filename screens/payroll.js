@@ -123,8 +123,15 @@ const PayrollScreen = (() => {
     });
   }
 
+  function minutesToTkcFormat(minutes) {
+    const h = Math.floor(minutes / 60);
+    const m = minutes % 60;
+    return `${h}.${String(m).padStart(2, '0')}`;
+  }
+
   function renderPayslipHTML(p, period, periodJP, payDateStr, year, month, index) {
     const taxCatLabel = p.taxCategory === 'otsu' ? '乙欄' : `甲欄（扶養${p.dependents}人）`;
+    const normalMinutes = p.totalWorkMinutes - p.totalOvertimeMinutes;
     return `
       <div class="card payslip-card" data-staff="${p.staffId}">
         <div class="payslip-new" id="payslip-${p.staffId}">
@@ -173,6 +180,21 @@ const PayrollScreen = (() => {
         </div>
         <div class="btn-group mt-8 no-print" style="justify-content:center;">
           <button class="btn btn-sm btn-primary payslip-pdf-btn" data-staff="${p.staffId}">PDF出力</button>
+        </div>
+        <div class="tkc-box no-print">
+          <div class="tkc-header">TKC入力用</div>
+          <div class="tkc-note">↓この数値をTKCにそのまま入力してください</div>
+          <table class="tkc-table">
+            <tbody>
+              <tr><td>出勤日数（平日出勤）</td><td class="tkc-val">${p.workDays} 日</td></tr>
+              <tr><td>出勤時間</td><td class="tkc-val">${minutesToTkcFormat(p.totalWorkMinutes)}</td></tr>
+              <tr><td>平日残業</td><td class="tkc-val">${minutesToTkcFormat(p.totalOvertimeMinutes)}</td></tr>
+              <tr><td>平日深夜</td><td class="tkc-val">${minutesToTkcFormat(p.totalNightMinutes)}</td></tr>
+              <tr><td>所定労働時間</td><td class="tkc-val">${minutesToTkcFormat(normalMinutes)}</td></tr>
+              <tr><td>(非)通勤手当</td><td class="tkc-val">${Utils.formatCurrency(p.commutePay)}</td></tr>
+              <tr><td>基本給単価（時給）</td><td class="tkc-val">${Utils.formatCurrency(p.wage)}</td></tr>
+            </tbody>
+          </table>
         </div>
         ${index % 2 === 0 && index < 99 ? '<div class="ps-page-break"></div>' : ''}
       </div>
