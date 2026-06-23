@@ -146,7 +146,8 @@ const PayrollScreen = (() => {
                 <thead><tr><th colspan="2" class="ps-section-header">勤 怠</th></tr></thead>
                 <tbody>
                   <tr><td>出勤日数</td><td class="ps-val">${p.workDays} 日</td></tr>
-                  <tr><td>労働時間</td><td class="ps-val">${Utils.minutesToHM(p.totalWorkMinutes)}</td></tr>
+                  <tr><td>総労働時間</td><td class="ps-val">${Utils.minutesToHM(p.totalWorkMinutes)}</td></tr>
+                  <tr><td>労働時間</td><td class="ps-val">${Utils.minutesToHM(normalMinutes)}</td></tr>
                   <tr><td>残業時間</td><td class="ps-val">${Utils.minutesToHM(p.totalOvertimeMinutes)}</td></tr>
                   <tr><td>深夜労働時間</td><td class="ps-val">${Utils.minutesToHM(p.totalNightMinutes)}</td></tr>
                 </tbody>
