@@ -186,13 +186,12 @@ const PayrollScreen = (() => {
           <div class="tkc-note">↓この数値をTKCにそのまま入力してください</div>
           <table class="tkc-table">
             <tbody>
-              <tr><td>出勤日数（平日出勤）</td><td class="tkc-val">${p.workDays} 日</td></tr>
-              <tr><td>出勤時間</td><td class="tkc-val">${minutesToTkcFormat(p.totalWorkMinutes)}</td></tr>
+              <tr><td>出勤日数</td><td class="tkc-val">${p.workDays} 日</td></tr>
+              <tr><td>出勤時間（通常勤務）</td><td class="tkc-val">${minutesToTkcFormat(normalMinutes)}</td></tr>
               <tr><td>平日残業</td><td class="tkc-val">${minutesToTkcFormat(p.totalOvertimeMinutes)}</td></tr>
               <tr><td>平日深夜</td><td class="tkc-val">${minutesToTkcFormat(p.totalNightMinutes)}</td></tr>
-              <tr><td>所定労働時間</td><td class="tkc-val">${minutesToTkcFormat(normalMinutes)}</td></tr>
               <tr><td>(非)通勤手当</td><td class="tkc-val">${Utils.formatCurrency(p.commutePay)}</td></tr>
-              <tr><td>基本給単価（時給）</td><td class="tkc-val">${Utils.formatCurrency(p.wage)}</td></tr>
+              <tr><td>時給</td><td class="tkc-val">${Utils.formatCurrency(p.wage)}</td></tr>
             </tbody>
           </table>
         </div>
