@@ -161,8 +161,7 @@ const Calc = (() => {
     const basePay = Math.floor(wage * normalMinutes / 60);
 
     // 残業代（法定超25%）
-    const overtimePay = Math.floor(wage * (1 + DEFAULTS.overtimeRate) * totalOvertimeMinutes / 60) -
-                        Math.floor(wage * totalOvertimeMinutes / 60);
+    const overtimePay = Math.floor(wage * (1 + DEFAULTS.overtimeRate) * totalOvertimeMinutes / 60);
 
     // 深夜割増（25%）
     const nightPay = Math.floor(wage * DEFAULTS.nightRate * totalNightMinutes / 60);
