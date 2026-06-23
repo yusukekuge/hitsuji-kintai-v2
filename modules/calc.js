@@ -15,6 +15,15 @@ const Calc = (() => {
     payDay: 25
   };
 
+  // 秒を四捨五入して分単位に丸める（30秒以上で切り上げ）
+  function roundToMinute(d) {
+    const sec = d.getSeconds();
+    const rounded = new Date(d);
+    rounded.setSeconds(0, 0);
+    if (sec >= 30) rounded.setMinutes(rounded.getMinutes() + 1);
+    return rounded;
+  }
+
   // 休憩ルール（打刻がない場合の自動付与）
   function getAutoBreakMinutes(workMinutes) {
     if (workMinutes <= 360) return 0;        // 6時間以内→0分
@@ -48,8 +57,8 @@ const Calc = (() => {
       };
     }
 
-    const startTime = new Date(clockIn.time);
-    const endTime = new Date(clockOut.time);
+    const startTime = roundToMinute(new Date(clockIn.time));
+    const endTime = roundToMinute(new Date(clockOut.time));
     const totalMinutes = Math.floor((endTime - startTime) / 60000);
 
     // 休憩計算
@@ -57,8 +66,8 @@ const Calc = (() => {
     if (breakStarts.length > 0) {
       // 打刻ベース
       for (let i = 0; i < breakStarts.length; i++) {
-        const bs = new Date(breakStarts[i].time);
-        const be = breakEnds[i] ? new Date(breakEnds[i].time) : endTime;
+        const bs = roundToMinute(new Date(breakStarts[i].time));
+        const be = roundToMinute(breakEnds[i] ? new Date(breakEnds[i].time) : endTime);
         breakMinutes += Math.floor((be - bs) / 60000);
       }
     } else {
