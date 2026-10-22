@@ -11,10 +11,12 @@ const ShiftEditScreen = (() => {
   async function render() {
     if (currentYear === undefined) init();
     const container = document.getElementById('screen-shift-edit');
-    const [staff, shifts] = await Promise.all([
+    const [staff, shifts, wageHistory] = await Promise.all([
       Storage.getStaff(),
-      Storage.getShifts(currentYear, currentMonth)
+      Storage.getShifts(currentYear, currentMonth),
+      Storage.getWageHistory()
     ]);
+    const wageTable = Calc.buildWageTable(staff, wageHistory);
     const daysInMonth = Utils.getDaysInMonth(currentYear, currentMonth);
     const todayStr = Utils.today();
 
@@ -168,13 +170,13 @@ const ShiftEditScreen = (() => {
         shiftMap[key] = { staffId: btn.dataset.staff, date: btn.dataset.date, startTime: '休み', endTime: '' };
       });
       const currentShifts = Object.values(shiftMap).filter(sh => sh.startTime && sh.startTime !== '休み');
-      const summary = Calc.calcShiftMonthlySummary(staff, currentShifts);
+      const summary = Calc.calcShiftMonthlySummary(staff, currentShifts, wageTable);
       summaryBody.innerHTML = summary.map(s => `
         <tr>
           <td>${Utils.escapeHtml(s.name)}</td>
           <td class="num">${s.shiftDays}日</td>
           <td class="num">${Utils.minutesToHM(s.totalMinutes)}</td>
-          <td class="num">${Utils.formatCurrency(s.wage)}</td>
+          <td class="num">${s.wageLabel}</td>
           <td class="num">${Utils.formatCurrency(s.estimatedPay)}</td>
           <td><span class="badge ${s.statusClass}">${s.statusLabel}</span></td>
         </tr>

@@ -38,7 +38,11 @@ const Storage = (() => {
       });
       clearTimeout(timeoutId);
       const json = await res.json();
-      if (json.error) throw new Error(json.error);
+      if (json.error) {
+        const err = new Error(json.error);
+        err.fromGas = true; // GAS側でのエラー（通信エラーと区別する）
+        throw err;
+      }
       return json.data !== undefined ? json.data : json;
     } catch (e) {
       clearTimeout(timeoutId);
@@ -71,7 +75,7 @@ const Storage = (() => {
       ...s,
       probation: s.probation === true || s.probation === '1' || s.probation === 1,
       active: s.active !== false && String(s.active) !== '0' && String(s.active) !== 'false',
-      hourlyWage: Number(s.hourlyWage) || 1150,
+      hourlyWage: Number(s.hourlyWage) || 0, // 後方互換用の列。給与計算の時給は wage_history から取る
       commuteDistance: Number(s.commuteDistance) || 0,
       otherAllowance: Number(s.otherAllowance) || 0,
       dependents: Number(s.dependents) || 0
@@ -110,7 +114,10 @@ const Storage = (() => {
     _staffCache = null; // キャッシュ無効化
     if (useGas) {
       try { await gasRequest('saveStaff', { staff }); return; }
-      catch (e) { console.warn('GAS saveStaff failed:', e.message); }
+      catch (e) {
+        if (e.fromGas) throw e; // 最低賃金チェック等でGASが拒否した場合はローカルに保存しない
+        console.warn('GAS saveStaff failed:', e.message);
+      }
     }
     const all = localGet('staff');
     const idx = all.findIndex(s => s.id === staff.id);
@@ -247,6 +254,101 @@ const Storage = (() => {
     localSet('shifts', all);
   }
 
+  // ===== 時給履歴・最低賃金 =====
+  // シート上はテキストのため、日付は 'YYYY-MM-DD'、金額は数値に正規化する
+  function normalizeDateStr(value) {
+    const m = String(value || '').trim().replace(/\//g, '-').match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+    return m ? `${m[1]}-${m[2].padStart(2, '0')}-${m[3].padStart(2, '0')}` : '';
+  }
+  function toYen(value) {
+    if (value === null || value === undefined || value === '') return NaN;
+    return Number(String(value).replace(/[,円\s]/g, ''));
+  }
+  const byEffectiveDate = (a, b) => a.effectiveDate.localeCompare(b.effectiveDate);
+
+  function normalizeWageHistory(list) {
+    return (list || []).map(h => ({
+      id: String(h.id || ''),
+      staffId: String(h.staffId || ''),
+      effectiveDate: normalizeDateStr(h.effectiveDate),
+      hourlyWage: toYen(h.hourlyWage),
+      note: String(h.note || ''),
+      createdAt: String(h.createdAt || '')
+    })).filter(h => h.staffId && h.effectiveDate && h.hourlyWage > 0).sort(byEffectiveDate);
+  }
+
+  function normalizeMinWages(list) {
+    return (list || []).map(m => ({
+      id: String(m.id || ''),
+      effectiveDate: normalizeDateStr(m.effectiveDate),
+      minWage: toYen(m.minWage),
+      note: String(m.note || '')
+    })).filter(m => m.effectiveDate && m.minWage > 0).sort(byEffectiveDate);
+  }
+
+  // GASが時給履歴に未対応（再デプロイ前）のときのエラーを分かりやすくする
+  function toWriteError(e) {
+    if (/Unknown action/.test(e.message)) return new Error('GASの再デプロイが必要です（時給履歴に未対応のGASです）');
+    return e;
+  }
+
+  // 取得できない場合は null（呼び出し側で旧仕様の時給にフォールバックする）
+  async function getWageHistory() {
+    if (useGas) {
+      try { return normalizeWageHistory(await gasRequest('getWageHistory')); }
+      catch (e) { console.warn('GAS getWageHistory failed:', e.message); return null; }
+    }
+    return normalizeWageHistory(localGet('wage_history'));
+  }
+
+  // 書き込みは localStorage にフォールバックしない（端末ごとに時給がずれるのを防ぐ）
+  // baseEntry: ローカルモードで初回追加時に保存する初期時給（GASモードではGAS側で移行済み）
+  async function addWageHistory(entry, baseEntry) {
+    if (useGas) {
+      try { return await gasRequest('addWageHistory', { entry }); }
+      catch (e) { throw toWriteError(e); }
+    }
+    const all = localGet('wage_history');
+    if (baseEntry && !all.some(h => String(h.staffId) === String(entry.staffId))) {
+      all.push({ ...baseEntry, id: Utils.generateId(), createdAt: Utils.now() });
+    }
+    const saved = { ...entry, id: Utils.generateId(), createdAt: Utils.now() };
+    all.push(saved);
+    localSet('wage_history', all);
+    return saved;
+  }
+
+  async function deleteWageHistory(staffId, id) {
+    if (useGas) {
+      try { await gasRequest('deleteWageHistory', { staffId, id }); return; }
+      catch (e) { throw toWriteError(e); }
+    }
+    localSet('wage_history', localGet('wage_history').filter(h => h.id !== id));
+  }
+
+  // 取得できない場合は null（呼び出し側で初期データにフォールバックする）
+  async function getMinWages() {
+    if (useGas) {
+      try { return normalizeMinWages(await gasRequest('getMinWages')); }
+      catch (e) { console.warn('GAS getMinWages failed:', e.message); return null; }
+    }
+    const local = localGet('min_wage');
+    return local.length > 0 ? normalizeMinWages(local) : null;
+  }
+
+  async function addMinWage(entry) {
+    if (useGas) {
+      try { return await gasRequest('addMinWage', { entry }); }
+      catch (e) { throw toWriteError(e); }
+    }
+    const all = localGet('min_wage');
+    if (all.length === 0) Calc.DEFAULT_MIN_WAGES.forEach(m => all.push({ ...m, id: Utils.generateId() }));
+    const saved = { ...entry, id: Utils.generateId() };
+    all.push(saved);
+    localSet('min_wage', all);
+    return saved;
+  }
+
   // ===== 設定 =====
   function getSetting(key, defaultVal = '') {
     const settings = localGetObj('app_settings');
@@ -302,6 +404,7 @@ const Storage = (() => {
     getTimeRecords, getTimeRecordsByMonth, getTimeRecordsByRange,
     addTimeRecord, addTimeRecordBackground, updateTimeRecord, deleteTimeRecord,
     getShifts, saveShift, deleteShift, saveShiftsBulk,
+    getWageHistory, addWageHistory, deleteWageHistory, getMinWages, addMinWage,
     getSetting, setSetting, getPin, setPin, verifyPin,
     exportAllData, importAllData, resetAllData,
     gasRequest

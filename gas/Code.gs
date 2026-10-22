@@ -51,6 +51,10 @@ function initializeSpreadsheet() {
     sheet.appendRow(['key', 'value']);
   }
 
+  // wage_history / min_wage シート（時給履歴・最低賃金）
+  getHeaderedSheet('wage_history', WAGE_HISTORY_HEADERS);
+  getHeaderedSheet('min_wage', MIN_WAGE_HEADERS);
+
   Logger.log('初期化完了');
 }
 
@@ -60,7 +64,7 @@ function doGet(e) {
   if (action === 'ping') {
     return jsonOk({ message: 'pong' });
   }
-  return jsonOk({ message: '勤怠管理システム API is running', version: '3.0' });
+  return jsonOk({ message: '勤怠管理システム API is running', version: '3.1' });
 }
 
 function doPost(e) {
@@ -105,6 +109,18 @@ function doPost(e) {
         return jsonOk(deleteShiftData(body.staffId, body.date));
       case 'saveShiftsBulk':
         return jsonOk(saveShiftsBulkData(body.shifts));
+
+      // === 時給履歴・最低賃金 ===
+      case 'getWageHistory':
+        return jsonOk(getWageHistoryData());
+      case 'addWageHistory':
+        return jsonOk(addWageHistoryData(body.entry));
+      case 'deleteWageHistory':
+        return jsonOk(deleteWageHistoryData(body.staffId, body.id));
+      case 'getMinWages':
+        return jsonOk(getMinWagesData());
+      case 'addMinWage':
+        return jsonOk(addMinWageData(body.entry));
 
       default:
         return jsonError('Unknown action: ' + action);
@@ -170,28 +186,56 @@ function getAllStaffData() {
   return sheetToArray(sheet);
 }
 
+// staff.hourlyWage 列は後方互換のため残すが、給与計算には使わない（時給は wage_history）。
+// 新規登録時だけ、その時給を wage_history の初期履歴として登録する。
 function saveStaffData(staff) {
-  const sheet = getSheet('staff');
-  const rowIdx = findRowIndex(sheet, 0, staff.id);
-  const row = [
-    staff.id, staff.name, staff.hourlyWage || 1150,
-    staff.probation ? '1' : '0', staff.commuteDistance || 0,
-    staff.hireDate || '', staff.otherAllowance || 0,
-    staff.taxCategory || 'kou', staff.dependents || 0,
-    staff.active !== false ? '1' : '0'
-  ];
+  return withLock(() => {
+    ensureWageHistoryMigrated_();
+    const sheet = getSheet('staff');
+    const rowIdx = findRowIndex(sheet, 0, staff.id);
+    const isNew = rowIdx < 0;
 
-  if (rowIdx > 0) {
-    const range = sheet.getRange(rowIdx, 1, 1, row.length);
-    range.setNumberFormat('@');
-    range.setValues([row]);
-  } else {
-    const newRow = sheet.getLastRow() + 1;
-    const range = sheet.getRange(newRow, 1, 1, row.length);
-    range.setNumberFormat('@');
-    range.setValues([row]);
-  }
-  return 'ok';
+    let initialWage = 0;
+    if (isNew) {
+      initialWage = toYen(staff.hourlyWage);
+      if (!(initialWage > 0) || Math.floor(initialWage) !== initialWage) {
+        throw new Error('時給は1円以上の整数で入力してください');
+      }
+      // 入社日が未来ならその日、それ以外は今日の最低賃金と比較
+      const hireDate = normalizeDateStr(staff.hireDate);
+      const checkDate = hireDate && hireDate > todayStr() ? hireDate : todayStr();
+      const minWage = minWageAt(readMinWagesSeeded_(), checkDate);
+      if (minWage && initialWage < minWage) {
+        throw new Error('最低賃金（' + checkDate + '時点 ' + minWage + '円）を下回るため登録できません');
+      }
+    }
+
+    const row = [
+      staff.id, staff.name, staff.hourlyWage || '',
+      staff.probation ? '1' : '0', staff.commuteDistance || 0,
+      staff.hireDate || '', staff.otherAllowance || 0,
+      staff.taxCategory || 'kou', staff.dependents || 0,
+      staff.active !== false ? '1' : '0'
+    ];
+
+    if (rowIdx > 0) {
+      const range = sheet.getRange(rowIdx, 1, 1, row.length);
+      range.setNumberFormat('@');
+      range.setValues([row]);
+    } else {
+      const newRow = sheet.getLastRow() + 1;
+      const range = sheet.getRange(newRow, 1, 1, row.length);
+      range.setNumberFormat('@');
+      range.setValues([row]);
+    }
+
+    if (isNew && !readWageHistory_().some(h => h.staffId === String(staff.id))) {
+      appendTextRows(getHeaderedSheet('wage_history', WAGE_HISTORY_HEADERS), [[
+        Utilities.getUuid(), String(staff.id), WAGE_BASE_DATE, String(initialWage), '登録時の時給', new Date().toISOString()
+      ]]);
+    }
+    return 'ok';
+  });
 }
 
 function deleteStaffData(staffId) {
@@ -322,4 +366,210 @@ function saveShiftsBulkData(shifts) {
   });
 
   return 'ok';
+}
+
+// ===== 時給履歴・最低賃金 =====
+// シートには日付・数値をテキストで保存し、読み込み時に正規化する（'0' と 0 の型ズレ対策）
+const WAGE_HISTORY_HEADERS = ['id', 'staffId', 'effectiveDate', 'hourlyWage', 'note', 'createdAt'];
+const MIN_WAGE_HEADERS = ['id', 'effectiveDate', 'minWage', 'note', 'createdAt'];
+const WAGE_BASE_DATE = '2000-01-01'; // 初期時給の適用開始日（入社日前の打刻もカバーするため固定の過去日）
+// 移行処理専用：旧仕様の時給（試用期間は1,116円固定、未設定は1,150円）
+const MIGRATION_PROBATION_WAGE = 1116;
+const MIGRATION_FALLBACK_WAGE = 1150;
+// 最低賃金の初期データ（兵庫県）
+const DEFAULT_MIN_WAGES = [
+  ['2025-10-04', 1116, '兵庫県最低賃金'],
+  ['2026-10-01', 1172, '兵庫県最低賃金']
+];
+
+function withLock(fn) {
+  const lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    return fn();
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function getHeaderedSheet(name, headers) {
+  const sheet = getSheet(name);
+  if (sheet.getLastRow() === 0) {
+    sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
+  }
+  return sheet;
+}
+
+function appendTextRows(sheet, rows) {
+  if (rows.length === 0) return;
+  const range = sheet.getRange(sheet.getLastRow() + 1, 1, rows.length, rows[0].length);
+  range.setNumberFormat('@');
+  range.setValues(rows);
+}
+
+function todayStr() {
+  return Utilities.formatDate(new Date(), 'Asia/Tokyo', 'yyyy-MM-dd');
+}
+
+// '2026/10/1' や Date 型も 'YYYY-MM-DD' にそろえる。不正な値は ''
+function normalizeDateStr(value) {
+  const s = String(formatCellValue(value) || '').trim().replace(/\//g, '-');
+  const m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+  if (!m) return '';
+  return m[1] + '-' + m[2].padStart(2, '0') + '-' + m[3].padStart(2, '0');
+}
+
+// '1,172' '1172円' なども数値にする。不正な値は NaN
+function toYen(value) {
+  if (value === null || value === undefined || value === '') return NaN;
+  return Number(String(value).replace(/[,円\s]/g, ''));
+}
+
+function byEffectiveDate(a, b) {
+  return a.effectiveDate < b.effectiveDate ? -1 : a.effectiveDate > b.effectiveDate ? 1 : 0;
+}
+
+function getSettingValue_(key) {
+  const sheet = getHeaderedSheet('settings', ['key', 'value']);
+  const rowIdx = findRowIndex(sheet, 0, key);
+  return rowIdx > 0 ? sheet.getRange(rowIdx, 2).getValue() : '';
+}
+
+function readWageHistory_() {
+  return sheetToArray(getHeaderedSheet('wage_history', WAGE_HISTORY_HEADERS)).map(r => ({
+    id: String(r.id),
+    staffId: String(r.staffId),
+    effectiveDate: normalizeDateStr(r.effectiveDate),
+    hourlyWage: toYen(r.hourlyWage),
+    note: String(r.note || ''),
+    createdAt: String(r.createdAt || '')
+  })).filter(h => h.staffId && h.effectiveDate && h.hourlyWage > 0);
+}
+
+function readMinWages_() {
+  return sheetToArray(getHeaderedSheet('min_wage', MIN_WAGE_HEADERS)).map(r => ({
+    id: String(r.id),
+    effectiveDate: normalizeDateStr(r.effectiveDate),
+    minWage: toYen(r.minWage),
+    note: String(r.note || ''),
+    createdAt: String(r.createdAt || '')
+  })).filter(m => m.effectiveDate && m.minWage > 0).sort(byEffectiveDate);
+}
+
+function minWageAt(minWages, date) {
+  let value = 0;
+  minWages.forEach(m => { if (m.effectiveDate <= date) value = m.minWage; });
+  return value;
+}
+
+// --- 既存スタッフの移行（1回だけ。ロック内で呼ぶこと） ---
+// wage_history に1件もないスタッフに、旧仕様と同じ時給を 2000-01-01 適用で登録する
+function ensureWageHistoryMigrated_() {
+  if (getSettingValue_('wage_history_migrated')) return;
+  const wageSheet = getHeaderedSheet('wage_history', WAGE_HISTORY_HEADERS);
+  const registered = {};
+  sheetToArray(wageSheet).forEach(r => { registered[String(r.staffId)] = true; });
+  const now = new Date().toISOString();
+  const rows = [];
+  sheetToArray(getSheet('staff')).forEach(s => {
+    const staffId = String(s.id || '');
+    if (!staffId || registered[staffId]) return;
+    const probation = s.probation === true || s.probation === '1' || s.probation === 1;
+    const wage = probation ? MIGRATION_PROBATION_WAGE : (Number(s.hourlyWage) || MIGRATION_FALLBACK_WAGE);
+    rows.push([Utilities.getUuid(), staffId, WAGE_BASE_DATE, String(wage), '移行時の時給（旧仕様から自動登録）', now]);
+    registered[staffId] = true;
+  });
+  appendTextRows(wageSheet, rows);
+  appendTextRows(getHeaderedSheet('settings', ['key', 'value']), [['wage_history_migrated', now]]);
+}
+
+// --- 最低賃金の初期データ登録（1回だけ。ロック内で呼ぶこと） ---
+function ensureMinWageSeeded_() {
+  if (getSettingValue_('min_wage_seeded')) return;
+  const sheet = getHeaderedSheet('min_wage', MIN_WAGE_HEADERS);
+  if (sheet.getLastRow() <= 1) {
+    const now = new Date().toISOString();
+    appendTextRows(sheet, DEFAULT_MIN_WAGES.map(m => [Utilities.getUuid(), m[0], String(m[1]), m[2], now]));
+  }
+  appendTextRows(getHeaderedSheet('settings', ['key', 'value']), [['min_wage_seeded', new Date().toISOString()]]);
+}
+
+function readMinWagesSeeded_() {
+  ensureMinWageSeeded_();
+  return readMinWages_();
+}
+
+function getWageHistoryData() {
+  if (!getSettingValue_('wage_history_migrated')) withLock(ensureWageHistoryMigrated_);
+  return readWageHistory_().sort(byEffectiveDate);
+}
+
+function addWageHistoryData(entry) {
+  return withLock(() => {
+    ensureWageHistoryMigrated_();
+    const staffId = String((entry && entry.staffId) || '');
+    if (!staffId || findRowIndex(getSheet('staff'), 0, staffId) < 0) throw new Error('スタッフが見つかりません');
+    const effectiveDate = normalizeDateStr(entry.effectiveDate);
+    if (!effectiveDate) throw new Error('適用開始日が正しくありません');
+    const wage = toYen(entry.hourlyWage);
+    if (!(wage > 0) || Math.floor(wage) !== wage) throw new Error('時給は1円以上の整数で入力してください');
+
+    const wageSheet = getHeaderedSheet('wage_history', WAGE_HISTORY_HEADERS);
+    let history = readWageHistory_().filter(h => h.staffId === staffId).sort(byEffectiveDate);
+    if (history.length === 0) {
+      // 移行後に旧画面から登録されたスタッフなど：先に旧仕様の時給を初期履歴として残す（過去の計算を変えないため）
+      const s = sheetToArray(getSheet('staff')).find(st => String(st.id) === staffId);
+      const probation = s.probation === true || s.probation === '1' || s.probation === 1;
+      const baseWage = probation ? MIGRATION_PROBATION_WAGE : (Number(s.hourlyWage) || MIGRATION_FALLBACK_WAGE);
+      appendTextRows(wageSheet, [[Utilities.getUuid(), staffId, WAGE_BASE_DATE, String(baseWage), '移行時の時給（旧仕様から自動登録）', new Date().toISOString()]]);
+      history = readWageHistory_().filter(h => h.staffId === staffId).sort(byEffectiveDate);
+    }
+    const latest = history[history.length - 1];
+    if (latest && effectiveDate <= latest.effectiveDate) {
+      throw new Error('適用開始日は最新の履歴（' + latest.effectiveDate + '）より後の日付にしてください');
+    }
+    const minWage = minWageAt(readMinWagesSeeded_(), effectiveDate);
+    if (minWage && wage < minWage) {
+      throw new Error('最低賃金（' + effectiveDate + '時点 ' + minWage + '円）を下回るため登録できません');
+    }
+    if (latest && wage === latest.hourlyWage) throw new Error('現在の時給と同じです');
+
+    const row = [Utilities.getUuid(), staffId, effectiveDate, String(wage), String(entry.note || '').slice(0, 100), new Date().toISOString()];
+    appendTextRows(wageSheet, [row]);
+    return { id: row[0], staffId: row[1], effectiveDate: row[2], hourlyWage: wage, note: row[4], createdAt: row[5] };
+  });
+}
+
+// 取り消せるのは各スタッフの「一番新しい履歴」だけ（初期の1件は取り消し不可）
+function deleteWageHistoryData(staffId, id) {
+  return withLock(() => {
+    const history = readWageHistory_().filter(h => h.staffId === String(staffId)).sort(byEffectiveDate);
+    if (history.length <= 1) throw new Error('初期の時給は取り消せません');
+    const latest = history[history.length - 1];
+    if (latest.id !== String(id)) throw new Error('取り消せるのは一番新しい履歴だけです');
+    const sheet = getHeaderedSheet('wage_history', WAGE_HISTORY_HEADERS);
+    const rowIdx = findRowIndex(sheet, 0, latest.id);
+    if (rowIdx < 2) throw new Error('履歴が見つかりません');
+    sheet.deleteRow(rowIdx);
+    return 'ok';
+  });
+}
+
+function getMinWagesData() {
+  if (!getSettingValue_('min_wage_seeded')) withLock(ensureMinWageSeeded_);
+  return readMinWages_();
+}
+
+function addMinWageData(entry) {
+  return withLock(() => {
+    const minWages = readMinWagesSeeded_();
+    const effectiveDate = normalizeDateStr(entry && entry.effectiveDate);
+    if (!effectiveDate) throw new Error('適用開始日が正しくありません');
+    const minWage = toYen(entry.minWage);
+    if (!(minWage > 0) || Math.floor(minWage) !== minWage) throw new Error('最低賃金は1円以上の整数で入力してください');
+    if (minWages.some(m => m.effectiveDate === effectiveDate)) throw new Error('同じ適用開始日の最低賃金がすでに登録されています');
+    const row = [Utilities.getUuid(), effectiveDate, String(minWage), String(entry.note || '').slice(0, 100), new Date().toISOString()];
+    appendTextRows(getHeaderedSheet('min_wage', MIN_WAGE_HEADERS), [row]);
+    return { id: row[0], effectiveDate: row[1], minWage: minWage, note: row[3], createdAt: row[4] };
+  });
 }

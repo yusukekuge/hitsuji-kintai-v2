@@ -1,7 +1,10 @@
 // ===== 画面8：設定 =====
 const SettingsScreen = (() => {
-  function render() {
+  async function render() {
     const container = document.getElementById('screen-settings');
+    const loadedMinWages = await Storage.getMinWages();
+    const minWages = loadedMinWages || Calc.DEFAULT_MIN_WAGES;
+    const todayMinWage = Calc.minWageAt(minWages, Utils.today());
     const currentPin = Storage.getPin();
     const closingDay = Storage.getSetting('closing_day', '20');
     const payDay = Storage.getSetting('pay_day', '25');
@@ -65,6 +68,32 @@ const SettingsScreen = (() => {
           </div>
         </div>
         <button class="btn btn-primary" id="set-date-save">保存</button>
+      </div>
+
+      <!-- 最低賃金 -->
+      <div class="card">
+        <h3 class="card-title">最低賃金</h3>
+        <p style="color:var(--text-light);font-size:0.85rem;margin-bottom:12px;">
+          時給の登録時と給与計算時のチェックに使います（スプレッドシートの min_wage シートに保存）。
+          今日時点：<strong>${Utils.formatCurrency(todayMinWage)}</strong>
+          ${loadedMinWages ? '' : '<br><span style="color:var(--danger);">GASから読み込めないため初期データを表示しています（GASの再デプロイが必要です）</span>'}
+        </p>
+        <div class="table-wrap mb-16">
+          <table>
+            <thead><tr><th>適用開始日</th><th>最低賃金</th><th>メモ</th></tr></thead>
+            <tbody>
+              ${minWages.map(m => `
+                <tr><td>${m.effectiveDate}〜</td><td class="num">${Utils.formatCurrency(m.minWage)}</td><td>${Utils.escapeHtml(m.note || '')}</td></tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label class="form-label">適用開始日</label><input type="date" class="form-input" id="set-mw-date"></div>
+          <div class="form-group"><label class="form-label">最低賃金（円）</label><input type="number" class="form-input" id="set-mw-wage" min="1" step="1"></div>
+        </div>
+        <div class="form-group"><label class="form-label">メモ</label><input type="text" class="form-input" id="set-mw-note" maxlength="100" placeholder="例：兵庫県最低賃金"></div>
+        <button class="btn btn-primary" id="set-mw-add" ${loadedMinWages ? '' : 'disabled'}>最低賃金を追加</button>
       </div>
 
       <!-- データ管理 -->
@@ -165,6 +194,27 @@ const SettingsScreen = (() => {
       Storage.setSetting('closing_day', document.getElementById('set-closing-day').value);
       Storage.setSetting('pay_day', document.getElementById('set-pay-day').value);
       Utils.showToast('締め日・支払日を保存しました', 'success');
+    });
+
+    // === 最低賃金 ===
+    document.getElementById('set-mw-add').addEventListener('click', async function() {
+      const effectiveDate = document.getElementById('set-mw-date').value;
+      const minWage = Number(document.getElementById('set-mw-wage').value);
+      const note = document.getElementById('set-mw-note').value.trim();
+      if (!effectiveDate) { Utils.showToast('適用開始日を入力してください', 'error'); return; }
+      if (!Number.isInteger(minWage) || minWage <= 0) { Utils.showToast('最低賃金は1円以上の整数で入力してください', 'error'); return; }
+      if (minWages.some(m => m.effectiveDate === effectiveDate)) { Utils.showToast('同じ適用開始日の最低賃金がすでに登録されています', 'error'); return; }
+      const ok = await Utils.showConfirm('最低賃金の追加', `${effectiveDate} から最低賃金 ${minWage.toLocaleString('ja-JP')}円 を登録します。\n登録後は画面から削除できません（修正はスプレッドシートで行ってください）。`);
+      if (!ok) return;
+      await Utils.withLoading(this, async () => {
+        try {
+          await Storage.addMinWage({ effectiveDate, minWage, note });
+          Utils.showToast('最低賃金を登録しました', 'success');
+          await render();
+        } catch (e) {
+          Utils.showToast('登録できませんでした：' + e.message, 'error');
+        }
+      });
     });
 
     // === CSV/JSONエクスポート・インポート ===
@@ -268,7 +318,7 @@ const SettingsScreen = (() => {
 
       if (col0 === 'ID' && col1 === '氏名') {
         const data = dataRows.map(r => ({
-          id: r[0] || '', name: r[1] || '', hourlyWage: Number(r[2]) || 1150,
+          id: r[0] || '', name: r[1] || '', hourlyWage: Number(r[2]) || 0,
           probation: r[3] === '1', commuteDistance: Number(r[4]) || 0,
           hireDate: r[5] || '', otherAllowance: Number(r[6]) || 0,
           taxCategory: r[7] || 'kou', dependents: Number(r[8]) || 0, active: r[9] !== '0'
@@ -302,7 +352,7 @@ const SettingsScreen = (() => {
     const today = Utils.today();
     downloadCSV(`スタッフ_${today}.csv`, [
       ['ID', '氏名', '時給', '試用期間', '通勤距離', '入社日', 'その他手当', '源泉区分', '扶養人数', '有効'],
-      ...(data.staff || []).map(s => [s.id, s.name, s.hourlyWage || 1150, s.probation ? '1' : '0', s.commuteDistance || 0, s.hireDate || '', s.otherAllowance || 0, s.taxCategory || 'kou', s.dependents || 0, s.active !== false ? '1' : '0'])
+      ...(data.staff || []).map(s => [s.id, s.name, s.hourlyWage || '',s.probation ? '1' : '0', s.commuteDistance || 0, s.hireDate || '', s.otherAllowance || 0, s.taxCategory || 'kou', s.dependents || 0, s.active !== false ? '1' : '0'])
     ]);
     downloadCSV(`打刻記録_${today}.csv`, [
       ['ID', 'スタッフID', '日付', '種別', '時刻', '修正済'],

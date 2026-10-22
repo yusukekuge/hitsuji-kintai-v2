@@ -12,17 +12,17 @@ const PayrollScreen = (() => {
     if (currentYear === undefined) init();
     const container = document.getElementById('screen-payroll');
     const period = Utils.getPayPeriod(currentYear, currentMonth);
-    const [staff, records] = await Promise.all([
-      Storage.getStaff(),
-      Storage.getTimeRecordsByRange(period.start, period.end)
+    const [allStaff, records, wageHistory, minWages] = await Promise.all([
+      Storage.getAllStaff(),
+      Storage.getTimeRecordsByRange(period.start, period.end),
+      Storage.getWageHistory(),
+      Storage.getMinWages()
     ]);
 
-    const payrolls = [];
-    for (const s of staff) {
-      const dates = [...new Set(records.filter(r => r.staffId === s.id).map(r => r.date))];
-      const dayWorks = dates.map(date => Calc.calcDayWork(records, s.id, date));
-      payrolls.push(Calc.calcMonthlyPay(s, dayWorks));
-    }
+    // 在籍者＋この期間に打刻がある退職者。時給は勤務日ごとに時給履歴から決める
+    const wageTable = Calc.buildWageTable(allStaff, wageHistory);
+    const payrolls = Calc.calcPayrollForPeriod(allStaff, records, wageTable, minWages, period);
+    const violations = payrolls.filter(p => p.minWageViolations.length > 0);
 
     const payDay = Storage.getSetting('pay_day', '25');
     const payDateStr = `${currentYear}年${currentMonth + 1}月${payDay}日`;
@@ -41,7 +41,25 @@ const PayrollScreen = (() => {
         <p style="color:var(--text-light);font-size:0.85rem;text-align:center;margin-bottom:16px;">
           締め期間：${period.start} 〜 ${period.end} ／ 支払日：${currentMonth + 1}月${payDay}日
         </p>
+        ${wageHistory === null ? `
+          <div class="alert-box alert-warning no-print">
+            時給履歴を読み込めませんでした（GASの再デプロイ前の可能性があります）。旧仕様の時給（スタッフ情報の時給・試用期間）で計算しています。
+          </div>` : ''}
       </div>
+
+      ${violations.length > 0 ? `
+        <div class="card no-print">
+          <div class="alert-box alert-danger" style="color:var(--danger);">
+            <strong>最低賃金を下回る時給で計算された勤務日があります</strong>
+            <ul style="margin:8px 0 0 1.2em;">
+              ${violations.map(p => summarizeViolations(p).map(v => `
+                <li>${Utils.escapeHtml(p.staffName)}：時給${Utils.formatCurrency(v.wage)}（最低賃金${Utils.formatCurrency(v.minWage)}）で ${v.days}日（${formatMD(v.first)}〜${formatMD(v.last)}）</li>
+              `).join('')).join('')}
+            </ul>
+            <div style="margin-top:6px;font-size:0.85rem;">スタッフ管理の「時給を変更」で、適用開始日つきの時給を登録してください。</div>
+          </div>
+        </div>
+      ` : ''}
 
       <div class="card">
         <h3 class="card-title">給与一覧</h3>
@@ -57,7 +75,11 @@ const PayrollScreen = (() => {
             <tbody>
               ${payrolls.map(p => `
                 <tr>
-                  <td>${Utils.escapeHtml(p.staffName)}</td>
+                  <td>
+                    ${Utils.escapeHtml(p.staffName)}
+                    ${p.retired ? '<span class="badge badge-warning">退職</span>' : ''}
+                    ${p.minWageViolations.length > 0 ? '<span class="badge badge-danger">最賃未満</span>' : ''}
+                  </td>
                   <td class="num">${p.workDays}日</td>
                   <td class="num">${Utils.minutesToHM(p.totalWorkMinutes)}</td>
                   <td class="num">${Utils.minutesToHM(p.totalNightMinutes)}</td>
@@ -129,6 +151,62 @@ const PayrollScreen = (() => {
     return `${h}.${String(m).padStart(2, '0')}`;
   }
 
+  // 'YYYY-MM-DD' → 'M/D'
+  function formatMD(dateStr) {
+    const [, m, d] = dateStr.split('-').map(Number);
+    return `${m}/${d}`;
+  }
+
+  // 最低賃金未満の勤務日を「時給・最低賃金」ごとにまとめる
+  function summarizeViolations(p) {
+    const groups = [];
+    p.minWageViolations.forEach(v => {
+      let g = groups.find(x => x.wage === v.wage && x.minWage === v.minWage);
+      if (!g) { g = { wage: v.wage, minWage: v.minWage, days: 0, first: v.date, last: v.date }; groups.push(g); }
+      g.days++;
+      g.last = v.date;
+    });
+    return groups;
+  }
+
+  // 時給が複数ある場合の内訳（給与明細）
+  function renderWageBreakdownHTML(p) {
+    if (p.wageSegments.length <= 1) return '';
+    return `
+      <thead><tr><th colspan="2" class="ps-section-header">時給内訳</th></tr></thead>
+      <tbody>
+        ${p.wageSegments.map(s => `
+          <tr>
+            <td colspan="2" style="font-size:0.85em;">
+              ${Utils.formatCurrency(s.wage)} × 労働時間 ${Utils.minutesToHM(s.normalMinutes)}（${formatMD(s.rangeStart)}〜${formatMD(s.rangeEnd)}）
+              ${s.overtimeMinutes > 0 ? `<br>　残業 ${Utils.minutesToHM(s.overtimeMinutes)}` : ''}
+              ${s.nightMinutes > 0 ? `<br>　深夜 ${Utils.minutesToHM(s.nightMinutes)}` : ''}
+            </td>
+          </tr>
+        `).join('')}
+      </tbody>
+    `;
+  }
+
+  // TKC入力用：時給ごとの行（時給が1つなら従来どおり1組）
+  function renderTkcWageRowsHTML(p) {
+    if (p.wageSegments.length <= 1) {
+      const s = p.wageSegments[0];
+      return `
+        <tr><td>出勤時間（通常勤務）</td><td class="tkc-val">${minutesToTkcFormat(s ? s.normalMinutes : 0)}</td></tr>
+        <tr><td>平日残業</td><td class="tkc-val">${minutesToTkcFormat(s ? s.overtimeMinutes : 0)}</td></tr>
+        <tr><td>平日深夜</td><td class="tkc-val">${minutesToTkcFormat(s ? s.nightMinutes : 0)}</td></tr>
+      `;
+    }
+    return p.wageSegments.map(s => `
+      <tr><td colspan="2" style="font-weight:700;padding-top:8px;">${formatMD(s.rangeStart)}〜${formatMD(s.rangeEnd)}</td></tr>
+      <tr><td>時給</td><td class="tkc-val">${Utils.formatCurrency(s.wage)}</td></tr>
+      <tr><td>出勤時間（通常勤務）</td><td class="tkc-val">${minutesToTkcFormat(s.normalMinutes)}</td></tr>
+      <tr><td>平日残業</td><td class="tkc-val">${minutesToTkcFormat(s.overtimeMinutes)}</td></tr>
+      <tr><td>平日深夜</td><td class="tkc-val">${minutesToTkcFormat(s.nightMinutes)}</td></tr>
+    `).join('');
+  }
+
   function renderPayslipHTML(p, period, periodJP, payDateStr, year, month, index) {
     const taxCatLabel = p.taxCategory === 'otsu' ? '乙欄' : `甲欄（扶養${p.dependents}人）`;
     const normalMinutes = p.totalWorkMinutes - p.totalOvertimeMinutes;
@@ -160,6 +238,7 @@ const PayrollScreen = (() => {
                   <tr><td>手当・その他</td><td class="ps-val">${Utils.formatCurrency(p.otherPay)}</td></tr>
                   <tr class="ps-total-row"><td><strong>総支給合計</strong></td><td class="ps-val"><strong>${Utils.formatCurrency(p.totalPay)}</strong></td></tr>
                 </tbody>
+                ${renderWageBreakdownHTML(p)}
               </table>
             </div>
             <div class="ps-col">
@@ -188,11 +267,9 @@ const PayrollScreen = (() => {
           <table class="tkc-table">
             <tbody>
               <tr><td>出勤日数</td><td class="tkc-val">${p.workDays} 日</td></tr>
-              <tr><td>出勤時間（通常勤務）</td><td class="tkc-val">${minutesToTkcFormat(normalMinutes)}</td></tr>
-              <tr><td>平日残業</td><td class="tkc-val">${minutesToTkcFormat(p.totalOvertimeMinutes)}</td></tr>
-              <tr><td>平日深夜</td><td class="tkc-val">${minutesToTkcFormat(p.totalNightMinutes)}</td></tr>
+              ${renderTkcWageRowsHTML(p)}
               <tr><td>(非)通勤手当</td><td class="tkc-val">${Utils.formatCurrency(p.commutePay)}</td></tr>
-              <tr><td>時給</td><td class="tkc-val">${Utils.formatCurrency(p.wage)}</td></tr>
+              ${p.wageSegments.length <= 1 ? `<tr><td>時給</td><td class="tkc-val">${Utils.formatCurrency(p.wage)}</td></tr>` : ''}
             </tbody>
           </table>
         </div>
@@ -255,11 +332,16 @@ const PayrollScreen = (() => {
 
   function exportPayrollCSV(payrolls, period) {
     if (payrolls.length === 0) { Utils.showToast('出力するデータがありません', 'error'); return; }
+    // 時給が複数ある場合、「時給」列は「1150/1200」、末尾の「時給内訳」列に期間ごとの明細を出す
     const headers = ['スタッフ名', '時給', '出勤日数', '総労働時間(分)', '残業時間(分)', '深夜時間(分)',
-      '基本給', '残業手当', '深夜手当', '通勤手当', 'その他手当', '総支給額', '課税額', '所得税', '手取り額'];
+      '基本給', '残業手当', '深夜手当', '通勤手当', 'その他手当', '総支給額', '課税額', '所得税', '手取り額', '時給内訳'];
     const rows = payrolls.map(p => [
-      p.staffName, p.wage, p.workDays, p.totalWorkMinutes, p.totalOvertimeMinutes, p.totalNightMinutes,
-      p.basePay, p.overtimePay, p.nightPay, p.commutePay, p.otherPay, p.totalPay, p.taxableAmount, p.incomeTax, p.netPay
+      p.staffName, p.wage !== null ? p.wage : p.wageSegments.map(s => s.wage).join('/'),
+      p.workDays, p.totalWorkMinutes, p.totalOvertimeMinutes, p.totalNightMinutes,
+      p.basePay, p.overtimePay, p.nightPay, p.commutePay, p.otherPay, p.totalPay, p.taxableAmount, p.incomeTax, p.netPay,
+      p.wageSegments.length > 1
+        ? p.wageSegments.map(s => `${s.wage}円 ${s.rangeStart}〜${s.rangeEnd} 通常${s.normalMinutes}分 残業${s.overtimeMinutes}分 深夜${s.nightMinutes}分`).join(' / ')
+        : ''
     ]);
     const csv = '\uFEFF' + [headers, ...rows].map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(',')).join('\n');
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });

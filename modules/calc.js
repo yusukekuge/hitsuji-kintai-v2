@@ -2,8 +2,6 @@
 const Calc = (() => {
   // デフォルト設定
   const DEFAULTS = {
-    hourlyWage: 1150,
-    probationWage: 1116,
     commuteCostPerKm: 10,
     commuteMaxPerDay: 500,
     nightStart: 22,
@@ -14,6 +12,98 @@ const Calc = (() => {
     closingDay: 20,
     payDay: 25
   };
+
+  // ===== 時給履歴 =====
+  // 初期時給の適用開始日（入社日前の打刻もカバーするため固定の過去日）
+  const WAGE_BASE_DATE = '2000-01-01';
+  // 移行処理専用：旧仕様の時給（試用期間は1,116円固定、未設定は1,150円）。GASの移行処理と同じルール
+  const LEGACY_WAGE = { probation: 1116, fallback: 1150 };
+  // 最低賃金の初期データ（GASから取得できないときだけ使う）
+  const DEFAULT_MIN_WAGES = [
+    { effectiveDate: '2025-10-04', minWage: 1116, note: '兵庫県最低賃金' },
+    { effectiveDate: '2026-10-01', minWage: 1172, note: '兵庫県最低賃金' }
+  ];
+
+  function legacyWage(staff) {
+    return staff.probation ? LEGACY_WAGE.probation : (Number(staff.hourlyWage) || LEGACY_WAGE.fallback);
+  }
+
+  // スタッフID → 適用開始日の昇順の時給履歴
+  // 履歴が1件もないスタッフ（GAS再デプロイ前など）は、移行処理と同じルールの仮履歴で補う
+  function buildWageTable(staffList, entries) {
+    const table = {};
+    (entries || []).forEach(h => { (table[h.staffId] = table[h.staffId] || []).push(h); });
+    Object.values(table).forEach(list => list.sort((a, b) => a.effectiveDate.localeCompare(b.effectiveDate)));
+    staffList.forEach(s => {
+      const key = String(s.id);
+      if (!table[key]) {
+        table[key] = [{ id: 'legacy-' + key, staffId: key, effectiveDate: WAGE_BASE_DATE, hourlyWage: legacyWage(s), note: '旧仕様の時給（未移行）', createdAt: '', virtual: true }];
+      }
+    });
+    return table;
+  }
+
+  // その日以前で最も新しい適用開始日の履歴（なければ最も古い履歴）
+  function findWageEntry(wageList, date) {
+    let found = null;
+    for (const h of wageList) {
+      if (h.effectiveDate <= date) found = h;
+      else break;
+    }
+    return found || wageList[0] || null;
+  }
+
+  function wageAt(wageList, date) {
+    const entry = findWageEntry(wageList, date);
+    return entry ? entry.hourlyWage : 0;
+  }
+
+  // minWages は適用開始日の昇順。該当なしは 0（チェックしない）
+  function minWageAt(minWages, date) {
+    let value = 0;
+    (minWages || DEFAULT_MIN_WAGES).forEach(m => { if (m.effectiveDate <= date) value = m.minWage; });
+    return value;
+  }
+
+  // 'YYYY-MM-DD' の前日
+  function prevDateStr(dateStr) {
+    const d = new Date(dateStr + 'T00:00:00Z');
+    d.setUTCDate(d.getUTCDate() - 1);
+    return d.toISOString().slice(0, 10);
+  }
+
+  // [{date, minutes}] を勤務日ごとの時給で金額にする（円未満は時給ごとの小計で切り捨て）
+  function sumPayByWage(wageList, items) {
+    const groups = new Map();
+    items.forEach(it => {
+      const entry = findWageEntry(wageList, it.date);
+      const g = groups.get(entry) || { wage: entry ? entry.hourlyWage : 0, minutes: 0 };
+      g.minutes += it.minutes;
+      groups.set(entry, g);
+    });
+    let total = 0;
+    groups.forEach(g => { total += Math.floor(g.wage * g.minutes / 60); });
+    return total;
+  }
+
+  // 時給変更（履歴追加）の入力チェック。NGならメッセージ、OKなら null
+  function validateWageChange(wageList, entry, minWages) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(entry.effectiveDate || '')) return '適用開始日を入力してください';
+    if (!Number.isInteger(entry.hourlyWage) || entry.hourlyWage <= 0) return '時給は1円以上の整数で入力してください';
+    const latest = wageList[wageList.length - 1];
+    if (latest && entry.effectiveDate <= latest.effectiveDate) return `適用開始日は最新の履歴（${latest.effectiveDate}）より後の日付にしてください`;
+    const minWage = minWageAt(minWages, entry.effectiveDate);
+    if (minWage && entry.hourlyWage < minWage) {
+      return `最低賃金を下回るため登録できません（${entry.effectiveDate}時点の最低賃金：${minWage.toLocaleString('ja-JP')}円）`;
+    }
+    if (latest && entry.hourlyWage === latest.hourlyWage) return '現在の時給と同じです';
+    return null;
+  }
+
+  // 適用開始日より後に最低賃金が上がり、この時給を下回る改定（保存はできるが注意を出す）
+  function laterMinWageRaises(wage, effectiveDate, minWages) {
+    return (minWages || DEFAULT_MIN_WAGES).filter(m => m.effectiveDate > effectiveDate && m.minWage > wage);
+  }
 
   // 秒を四捨五入して分単位に丸める（30秒以上で切り上げ）
   function roundToMinute(d) {
@@ -149,31 +239,77 @@ const Calc = (() => {
   }
 
   // 月次給与計算
-  function calcMonthlyPay(staff, dayWorks) {
-    const wage = staff.probation ? DEFAULTS.probationWage : (staff.hourlyWage || DEFAULTS.hourlyWage);
+  // wageList: そのスタッフの時給履歴（適用開始日の昇順）
+  // options.period: 締め期間（時給内訳の期間表示用） / options.minWages: 最低賃金履歴
+  function calcMonthlyPay(staff, dayWorks, wageList, options = {}) {
+    const { period = null, minWages = null } = options;
+    if (!wageList || wageList.length === 0) wageList = buildWageTable([staff], [])[String(staff.id)];
     let totalWorkMinutes = 0;
     let totalNightMinutes = 0;
     let totalOvertimeMinutes = 0;
     let workDays = 0;
 
-    dayWorks.forEach(dw => {
-      if (dw.isComplete) {
-        totalWorkMinutes += dw.workMinutes;
-        totalNightMinutes += dw.nightMinutes;
-        totalOvertimeMinutes += dw.overtimeMinutes;
-        workDays++;
+    // 勤務日ごとに時給を決め、時給（履歴）ごとに集計する
+    const segMap = new Map();
+    const minWageViolations = [];
+    dayWorks.filter(dw => dw.isComplete).sort((a, b) => a.date.localeCompare(b.date)).forEach(dw => {
+      totalWorkMinutes += dw.workMinutes;
+      totalNightMinutes += dw.nightMinutes;
+      totalOvertimeMinutes += dw.overtimeMinutes;
+      workDays++;
+
+      const entry = findWageEntry(wageList, dw.date);
+      let seg = segMap.get(entry);
+      if (!seg) {
+        seg = { entry, wage: entry.hourlyWage, workDays: 0, workMinutes: 0, overtimeMinutes: 0, nightMinutes: 0, firstWorkDate: dw.date, lastWorkDate: dw.date };
+        segMap.set(entry, seg);
       }
+      seg.workDays++;
+      seg.workMinutes += dw.workMinutes;
+      seg.overtimeMinutes += dw.overtimeMinutes;
+      seg.nightMinutes += dw.nightMinutes;
+      seg.lastWorkDate = dw.date;
+
+      const minWage = minWageAt(minWages, dw.date);
+      if (minWage && entry.hourlyWage < minWage) minWageViolations.push({ date: dw.date, wage: entry.hourlyWage, minWage });
     });
 
-    // 基本給（法定内労働時間 × 時給）
+    const wageSegments = [...segMap.values()].map(seg => {
+      const segNormal = seg.workMinutes - seg.overtimeMinutes;
+      // 内訳の期間：締め期間とこの時給の適用期間が重なる範囲
+      const next = wageList[wageList.indexOf(seg.entry) + 1];
+      let rangeStart = seg.firstWorkDate, rangeEnd = seg.lastWorkDate;
+      if (period) {
+        rangeStart = seg.entry.effectiveDate > period.start ? seg.entry.effectiveDate : period.start;
+        if (seg.firstWorkDate < rangeStart) rangeStart = seg.firstWorkDate; // 最初の履歴より前の勤務日（補完時）
+        rangeEnd = next && prevDateStr(next.effectiveDate) < period.end ? prevDateStr(next.effectiveDate) : period.end;
+      }
+      return {
+        wage: seg.wage,
+        effectiveDate: seg.entry.effectiveDate,
+        rangeStart,
+        rangeEnd,
+        workDays: seg.workDays,
+        workMinutes: seg.workMinutes,
+        normalMinutes: segNormal,
+        overtimeMinutes: seg.overtimeMinutes,
+        nightMinutes: seg.nightMinutes,
+        // 基本給（法定内労働時間 × 時給）
+        basePay: Math.floor(seg.wage * segNormal / 60),
+        // 残業手当（時給 × 1.25 × 残業時間）
+        overtimePay: Math.floor(seg.wage * (1 + DEFAULTS.overtimeRate) * seg.overtimeMinutes / 60),
+        // 深夜割増（25%）
+        nightPay: Math.floor(seg.wage * DEFAULTS.nightRate * seg.nightMinutes / 60)
+      };
+    }).sort((a, b) => a.effectiveDate.localeCompare(b.effectiveDate));
+
     const normalMinutes = totalWorkMinutes - totalOvertimeMinutes;
-    const basePay = Math.floor(wage * normalMinutes / 60);
-
-    // 残業手当（時給 × 1.25 × 残業時間）
-    const overtimePay = Math.floor(wage * (1 + DEFAULTS.overtimeRate) * totalOvertimeMinutes / 60);
-
-    // 深夜割増（25%）
-    const nightPay = Math.floor(wage * DEFAULTS.nightRate * totalNightMinutes / 60);
+    const basePay = wageSegments.reduce((sum, s) => sum + s.basePay, 0);
+    const overtimePay = wageSegments.reduce((sum, s) => sum + s.overtimePay, 0);
+    const nightPay = wageSegments.reduce((sum, s) => sum + s.nightPay, 0);
+    // 時給が1つならその時給、複数なら null（内訳は wageSegments）、勤務なしは期間末日時点の時給
+    const wage = wageSegments.length === 1 ? wageSegments[0].wage
+      : wageSegments.length === 0 ? wageAt(wageList, period ? period.end : Utils.today()) : null;
 
     // 通勤手当
     const commuteDistance = staff.commuteDistance || 0;
@@ -211,8 +347,24 @@ const Calc = (() => {
       dependents,
       taxableAmount,
       incomeTax,
-      netPay
+      netPay,
+      wageSegments,
+      minWageViolations
     };
+  }
+
+  // 締め期間の給与一覧（給与画面・CSVで共通）
+  // 在籍中のスタッフ＋その期間に打刻がある退職者（active=0）が対象
+  function calcPayrollForPeriod(allStaff, records, wageTable, minWages, period) {
+    return allStaff
+      .filter(s => s.active !== false || records.some(r => r.staffId === s.id))
+      .map(s => {
+        const dates = [...new Set(records.filter(r => r.staffId === s.id).map(r => r.date))];
+        const dayWorks = dates.map(date => calcDayWork(records, s.id, date));
+        const p = calcMonthlyPay(s, dayWorks, wageTable[String(s.id)], { period, minWages });
+        p.retired = s.active === false;
+        return p;
+      });
   }
 
   // ===== 源泉徴収税額計算（令和8年分 月額表ベース） =====
@@ -460,21 +612,27 @@ const Calc = (() => {
     return Math.max(0, total - breakMin);
   }
 
-  // スタッフ別シフト月次集計
-  function calcShiftMonthlySummary(staffList, shifts) {
+  // スタッフ別シフト月次集計（給与見込みは勤務日ごとの時給で計算）
+  function calcShiftMonthlySummary(staffList, shifts, wageTable) {
     return staffList.map(s => {
       const staffShifts = shifts.filter(sh => sh.staffId === s.id);
+      const wageList = wageTable[String(s.id)] || buildWageTable([s], [])[String(s.id)];
       let totalMinutes = 0;
       let shiftDays = 0;
+      const items = [];
       staffShifts.forEach(sh => {
         const mins = calcShiftMinutes(sh.startTime, sh.endTime);
         if (mins > 0) {
           totalMinutes += mins;
           shiftDays++;
+          items.push({ date: sh.date, minutes: mins });
         }
       });
-      const wage = s.probation ? DEFAULTS.probationWage : (s.hourlyWage || DEFAULTS.hourlyWage);
-      const estimatedPay = Math.floor(wage * totalMinutes / 60);
+      const wages = [...new Set(items.sort((a, b) => a.date.localeCompare(b.date)).map(it => wageAt(wageList, it.date)))];
+      if (wages.length === 0) wages.push(wageAt(wageList, Utils.today()));
+      const wage = wages.length === 1 ? wages[0] : null;
+      const wageLabel = wages.map(w => Utils.formatCurrency(w)).join(' → ');
+      const estimatedPay = sumPayByWage(wageList, items);
       let statusClass, statusLabel;
       if (estimatedPay < 85000) {
         statusClass = 'badge-success'; statusLabel = '余裕あり';
@@ -483,16 +641,27 @@ const Calc = (() => {
       } else {
         statusClass = 'badge-danger'; statusLabel = '要確認';
       }
-      return { staffId: s.id, name: s.name, wage, shiftDays, totalMinutes, estimatedPay, statusClass, statusLabel };
+      return { staffId: s.id, name: s.name, wage, wageLabel, shiftDays, totalMinutes, estimatedPay, statusClass, statusLabel };
     });
   }
 
   return {
     DEFAULTS,
+    WAGE_BASE_DATE,
+    DEFAULT_MIN_WAGES,
+    legacyWage,
+    buildWageTable,
+    findWageEntry,
+    wageAt,
+    minWageAt,
+    sumPayByWage,
+    validateWageChange,
+    laterMinWageRaises,
     getAutoBreakMinutes,
     calcDayWork,
     calcNightMinutes,
     calcMonthlyPay,
+    calcPayrollForPeriod,
     calcDependentWarning,
     calcIncomeTax,
     calcTaxKou,
