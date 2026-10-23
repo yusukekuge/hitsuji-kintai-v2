@@ -344,16 +344,22 @@ const Calc = (() => {
     const dailyCommute = Math.min(commuteDistance * DEFAULTS.commuteCostPerKm, DEFAULTS.commuteMaxPerDay);
     const commutePay = Math.floor(dailyCommute * workDays);
 
-    // その他手当
+    // その他手当（スタッフ管理の月額固定）
     const otherPay = staff.otherAllowance || 0;
 
-    const totalPay = basePay + overtimePay + nightPay + commutePay + otherPay;
+    // 精算・調整額（支払月ごと。課税分は所得税の対象、非課税分は対象外）
+    const adjustments = (options.adjustments || []).map(a => ({ id: a.id, name: a.name, amount: a.amount, taxable: !!a.taxable, note: a.note || '' }));
+    const adjustmentsTaxable = adjustments.filter(a => a.taxable).reduce((sum, a) => sum + a.amount, 0);
+    const adjustmentsNonTaxable = adjustments.filter(a => !a.taxable).reduce((sum, a) => sum + a.amount, 0);
 
-    // 所得税計算
+    const totalPay = basePay + overtimePay + nightPay + commutePay + otherPay + adjustmentsTaxable + adjustmentsNonTaxable;
+
+    // 所得税計算（非課税＝通勤手当＋非課税の精算・調整額）
     const taxCategory = staff.taxCategory || 'kou';
     const dependents = staff.dependents || 0;
-    const incomeTax = calcIncomeTax(totalPay, commutePay, taxCategory, dependents);
-    const taxableAmount = Math.max(0, totalPay - commutePay);
+    const nonTaxable = commutePay + adjustmentsNonTaxable;
+    const incomeTax = calcIncomeTax(totalPay, nonTaxable, taxCategory, dependents);
+    const taxableAmount = Math.max(0, totalPay - nonTaxable);
     const netPay = totalPay - incomeTax;
 
     return {
@@ -377,22 +383,123 @@ const Calc = (() => {
       incomeTax,
       netPay,
       wageSegments,
-      minWageViolations
+      minWageViolations,
+      adjustments,
+      adjustmentsTaxable,
+      adjustmentsNonTaxable
     };
   }
 
   // 締め期間の給与一覧（給与画面・CSVで共通）
-  // 在籍中のスタッフ＋その期間に打刻がある退職者（active=0）が対象
-  function calcPayrollForPeriod(allStaff, records, wageTable, minWages, period) {
+  // 在籍中のスタッフ＋その期間に打刻・精算/調整額・確定がある退職者（active=0）が対象
+  // adjustments: その支払月の精算・調整額（全スタッフ分）、includeStaffIds: 必ず含めるスタッフ（確定済みなど）
+  function calcPayrollForPeriod(allStaff, records, wageTable, minWages, period, adjustments = [], includeStaffIds = []) {
     return allStaff
-      .filter(s => s.active !== false || records.some(r => r.staffId === s.id))
+      .filter(s => s.active !== false || records.some(r => r.staffId === s.id)
+        || adjustments.some(a => a.staffId === String(s.id)) || includeStaffIds.includes(String(s.id)))
       .map(s => {
         const dates = [...new Set(records.filter(r => r.staffId === s.id).map(r => r.date))];
         const dayWorks = dates.map(date => calcDayWork(records, s.id, date));
-        const p = calcMonthlyPay(s, dayWorks, wageTable[String(s.id)], { period, minWages });
+        const p = calcMonthlyPay(s, dayWorks, wageTable[String(s.id)], {
+          period, minWages, adjustments: adjustments.filter(a => a.staffId === String(s.id))
+        });
         p.retired = s.active === false;
         return p;
       });
+  }
+
+  // ===== 給与確定：確定時の記録と今の記録の比較 =====
+  // 日ごとの打刻と勤務時間（確定時に明細と一緒に保存し、あとで「どの日が変わったか」を出すのに使う）
+  function snapshotDays(records, staffId) {
+    const dates = [...new Set(records.filter(r => r.staffId === staffId).map(r => r.date))].sort();
+    return dates.map(date => {
+      const dw = calcDayWork(records, staffId, date);
+      const punches = records.filter(r => r.staffId === staffId && r.date === date)
+        .sort((a, b) => a.time.localeCompare(b.time))
+        .map(r => ({ id: r.id, type: r.type, time: r.time }));
+      return {
+        date, punches,
+        clockIn: dw.clockIn, clockOut: dw.clockOut, isComplete: dw.isComplete,
+        breakMinutes: dw.breakMinutes, workMinutes: dw.workMinutes,
+        overtimeMinutes: dw.overtimeMinutes, nightMinutes: dw.nightMinutes
+      };
+    });
+  }
+
+  // 打刻の内容が変わった日：[{ date, before, after }]（before/after はその日の snapshot、なければ null）
+  function diffDays(beforeDays, afterDays) {
+    const sig = d => (d ? d.punches.map(p => `${p.type}@${p.time}`).join('|') : '');
+    const beforeMap = new Map(beforeDays.map(d => [d.date, d]));
+    const afterMap = new Map(afterDays.map(d => [d.date, d]));
+    const dates = [...new Set([...beforeMap.keys(), ...afterMap.keys()])].sort();
+    return dates
+      .filter(date => sig(beforeMap.get(date)) !== sig(afterMap.get(date)))
+      .map(date => ({ date, before: beforeMap.get(date) || null, after: afterMap.get(date) || null }));
+  }
+
+  // 確定済みの月：今のデータで再計算した額（current）と「実際の支払額」（TKCの支給合計）の差
+  // 非課税分の差＝通勤手当＋非課税の精算・調整額の変化、課税分の差＝残り
+  function compareWithClosing(closing, current, records) {
+    const slip = closing.payslip;
+    const changedDays = diffDays(slip.days || [], snapshotDays(records, closing.staffId));
+    const diffTotal = current.totalPay - closing.tkcTotalPay;
+    const nonTaxClosed = (slip.commutePay || 0) + (slip.adjustmentsNonTaxable || 0);
+    const nonTaxNow = current.commutePay + (current.adjustmentsNonTaxable || 0);
+    const diffNonTaxable = nonTaxNow - nonTaxClosed;
+    return {
+      diffTotal,
+      diffTaxable: diffTotal - diffNonTaxable,
+      diffNonTaxable,
+      changedDays,
+      // 確定後に記録・時給などが変わって、再計算結果が確定時の明細と違う
+      changedSinceClose: changedDays.length > 0 || current.totalPay !== slip.totalPay
+    };
+  }
+
+  // 精算の下書きにつけるメモ（これで「どの確定月の精算か」を判別する）
+  function settlementNote(closing) {
+    return `${Utils.payMonthLabel(closing.payMonth)}支払分（確定済み）の再計算との差額`;
+  }
+
+  // すでに精算・調整額に登録済みの分を差し引いた、残りの差額
+  function remainingSettlement(comparison, closing, adjustments) {
+    const note = settlementNote(closing);
+    const settled = adjustments.filter(a => a.staffId === String(closing.staffId) && a.note === note);
+    const settledTaxable = settled.filter(a => a.taxable).reduce((s, a) => s + a.amount, 0);
+    const settledNonTaxable = settled.filter(a => !a.taxable).reduce((s, a) => s + a.amount, 0);
+    return {
+      ...comparison,
+      settled,
+      diffTaxable: comparison.diffTaxable - settledTaxable,
+      diffNonTaxable: comparison.diffNonTaxable - settledNonTaxable,
+      diffTotal: comparison.diffTotal - settledTaxable - settledNonTaxable
+    };
+  }
+
+  // 差額を次の未確定月の精算・調整額にする下書き（課税分・非課税分を分ける）
+  function buildSettlementDrafts(closing, comparison) {
+    const month = Number(closing.payMonth.split('-')[1]);
+    const dates = comparison.changedDays.map(d => d.date.slice(5).split('-').map(Number).join('/')).join('・');
+    const scope = dates ? `（${dates}分）` : '';
+    const note = settlementNote(closing);
+    const drafts = [];
+    if (comparison.diffTaxable !== 0) drafts.push({ name: `${month}月分精算${scope}`, amount: comparison.diffTaxable, taxable: true, note });
+    if (comparison.diffNonTaxable !== 0) drafts.push({ name: `${month}月分精算・通勤手当${scope}`, amount: comparison.diffNonTaxable, taxable: false, note });
+    return drafts;
+  }
+
+  // そのスタッフの、指定の支払月より後で最初の未確定の支払月
+  function findNextOpenPayMonth(closings, staffId, payMonth) {
+    let pm = Utils.nextPayMonth(payMonth);
+    while (closings.some(c => c.status === 'active' && c.staffId === String(staffId) && c.payMonth === pm)) pm = Utils.nextPayMonth(pm);
+    return pm;
+  }
+
+  // そのスタッフの有効な確定のうち一番新しい支払月（取り消しできるのはこれだけ）
+  function latestActiveClosing(closings, staffId) {
+    return closings
+      .filter(c => c.status === 'active' && c.staffId === String(staffId))
+      .reduce((a, c) => (!a || c.payMonth > a.payMonth ? c : a), null);
   }
 
   // ===== 源泉徴収税額計算（令和8年分 月額表ベース） =====
@@ -692,6 +799,14 @@ const Calc = (() => {
     calcNightMinutes,
     calcMonthlyPay,
     calcPayrollForPeriod,
+    snapshotDays,
+    diffDays,
+    compareWithClosing,
+    settlementNote,
+    remainingSettlement,
+    buildSettlementDrafts,
+    findNextOpenPayMonth,
+    latestActiveClosing,
     calcDependentWarning,
     calcIncomeTax,
     calcTaxKou,

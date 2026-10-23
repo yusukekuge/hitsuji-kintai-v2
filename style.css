@@ -508,6 +508,21 @@ td.num { text-align: right; font-variant-numeric: tabular-nums; }
 }
 .sync-banner .btn { background: var(--white); color: var(--danger); }
 
+/* ===== 給与確定・精算/調整額 ===== */
+.pay-controls { margin-top: 12px; display: grid; gap: 12px; }
+.pay-box {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+  background: var(--white);
+}
+.pay-box-closed { border-color: var(--primary); background: var(--primary-light); }
+.pay-box-title { font-weight: 700; margin-bottom: 8px; }
+.adj-form { border-top: 1px dashed var(--border); padding-top: 10px; margin-top: 10px; }
+.adj-draft { background: var(--warning-light); border: 1px solid var(--warning); border-radius: var(--radius-sm); padding: 10px; }
+.adj-draft-label { font-size: 0.8rem; font-weight: 700; color: var(--warning); margin-bottom: 6px; }
+#reason-input { width: 100%; resize: vertical; }
+
 /* ===== 打刻漏れ ===== */
 tr.row-missing td { background: var(--danger-light); }
 .missing-label { color: var(--danger); font-weight: 700; font-size: 0.8rem; }

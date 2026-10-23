@@ -1,7 +1,11 @@
 // ===== 画面4：勤務記録一覧 =====
 const RecordsScreen = (() => {
   let currentYear, currentMonth, filterStaffId = 'all';
-  let activeTab = 'records'; // 'records' or 'history'
+  let activeTab = 'records'; // 'records' | 'history' | 'changes'
+  let closings = [];      // 給与確定（確定済みの支払月の警告用）
+  let canEdit = true;     // 修正履歴を残せるとき（GAS対応済み）だけ修正できる
+  const TYPE_LABELS = { clock_in: '出勤', break_start: '休憩開始', break_end: '休憩終了', clock_out: '退勤' };
+  const EDIT_BLOCKED = '打刻の修正には修正履歴の記録が必要です。GASの再デプロイ後に修正できます';
 
   function init() {
     const now = new Date();
@@ -20,13 +24,40 @@ const RecordsScreen = (() => {
     }
   }
 
+  // 理由を入力してから保存する（理由は必須。確定済みの支払月に含まれる日なら警告を出す）
+  // fn(change) で保存。change = { reason } は GAS 側で record_changes に記録される
+  async function writeWithReason(action, record, detail, fn) {
+    if (!canEdit) { Utils.showToast(EDIT_BLOCKED, 'error'); return false; }
+    const payMonth = Utils.payMonthOf(record.date);
+    const closed = closings.some(c => c.status === 'active' && c.payMonth === payMonth && c.staffId === String(record.staffId));
+    const warning = closed
+      ? `この日は確定済みの${Utils.payMonthLabel(payMonth)}支払分に含まれます。修正すると差額が出るので、次の給与で精算してください。`
+      : '';
+    const titles = { add: '打刻の追加', update: '打刻の修正', delete: '打刻の削除' };
+    const reason = await Utils.promptReason(titles[action],
+      `${Utils.formatDateJP(record.date)}　${detail}\n理由を入力してください（変更前・変更後と一緒に修正履歴に残ります）。`, warning);
+    if (!reason) return false;
+    return tryWrite(() => fn({ reason }));
+  }
+
+  function describeRecord(r) {
+    return r ? `${TYPE_LABELS[r.type] || r.type} ${Utils.formatTime(r.time)}` : '—';
+  }
+
   async function render() {
     if (currentYear === undefined) init();
     const container = document.getElementById('screen-records');
-    const [staff, records] = await Promise.all([
+    const monthStart = `${currentYear}-${String(currentMonth + 1).padStart(2, '0')}-01`;
+    const monthEnd = `${currentYear}-${String(currentMonth + 1).padStart(2, '0')}-31`;
+    const [staff, records, closingsLoaded, changes] = await Promise.all([
       Storage.getStaff(),
-      Storage.getTimeRecordsByMonth(currentYear, currentMonth)
+      Storage.getTimeRecordsByMonth(currentYear, currentMonth),
+      Storage.getPayrollClosed(),
+      Storage.getRecordChanges(monthStart, monthEnd)
     ]);
+    closings = closingsLoaded || [];
+    canEdit = changes !== null;
+    const staffNames = Object.fromEntries(staff.map(s => [String(s.id), s.name]));
     const daysInMonth = Utils.getDaysInMonth(currentYear, currentMonth);
 
     const filteredStaff = filterStaffId === 'all' ? staff : staff.filter(s => s.id === filterStaffId);
@@ -114,9 +145,12 @@ const RecordsScreen = (() => {
           </div>
         </div>
 
+        ${canEdit ? '' : `<div class="alert-box alert-warning">${EDIT_BLOCKED}（閲覧はできます）。</div>`}
+
         <div class="tab-nav">
           <button class="tab-btn ${activeTab === 'records' ? 'active' : ''}" data-tab="records">勤務記録</button>
           <button class="tab-btn ${activeTab === 'history' ? 'active' : ''}" data-tab="history">打刻履歴</button>
+          <button class="tab-btn ${activeTab === 'changes' ? 'active' : ''}" data-tab="changes">修正履歴</button>
         </div>
 
         <div class="tab-content ${activeTab === 'records' ? 'active' : ''}" id="tab-records">
@@ -153,6 +187,10 @@ const RecordsScreen = (() => {
 
         <div class="tab-content ${activeTab === 'history' ? 'active' : ''}" id="tab-history">
           ${historyHTML}
+        </div>
+
+        <div class="tab-content ${activeTab === 'changes' ? 'active' : ''}" id="tab-changes">
+          ${renderChangesHTML(changes, staffNames)}
         </div>
       </div>
     `;
@@ -211,7 +249,9 @@ const RecordsScreen = (() => {
               const [h, m] = timeVal.split(':').map(Number);
               const newTime = new Date(rec.time);
               newTime.setHours(h, m, 0, 0);
-              if (!await tryWrite(() => Storage.updateTimeRecord({ ...rec, time: newTime.toISOString(), modified: true }))) return;
+              const updated = { ...rec, time: newTime.toISOString(), modified: true };
+              if (!await writeWithReason('update', rec, `${describeRecord(rec)} → ${timeVal}`,
+                change => Storage.updateTimeRecord(updated, change))) return;
               Utils.showToast('打刻時刻を修正しました', 'success');
               await render();
             }
@@ -225,11 +265,11 @@ const RecordsScreen = (() => {
     // --- 打刻履歴タブ：削除 ---
     container.querySelectorAll('.hist-delete-btn').forEach(btn => {
       btn.addEventListener('click', async function() {
-        const typeName = typeLabelsHistory[btn.dataset.type] || btn.dataset.type;
-        const ok = await Utils.showConfirm('打刻削除', `${typeName}の打刻を削除しますか？\nこの操作は元に戻せません。`);
-        if (!ok) return;
+        const rec = records.find(r => r.id === btn.dataset.id);
+        if (!rec) return;
         await Utils.withLoading(this, async () => {
-          if (!await tryWrite(() => Storage.deleteTimeRecord(btn.dataset.id))) return;
+          if (!await writeWithReason('delete', rec, `${describeRecord(rec)} を削除（変更前の内容は修正履歴に残ります）`,
+            change => Storage.deleteTimeRecord(rec.id, change))) return;
           Utils.showToast('打刻を削除しました');
           await render();
         });
@@ -240,6 +280,39 @@ const RecordsScreen = (() => {
     document.getElementById('hist-add-btn')?.addEventListener('click', () => {
       showHistoryAddModal(staff, records);
     });
+  }
+
+  // 修正履歴（この月の日付の打刻に対する追加・修正・削除）
+  function renderChangesHTML(changes, staffNames) {
+    if (changes === null) return '<p style="color:var(--text-light);text-align:center;padding:20px;">修正履歴を読み込めませんでした（GASの再デプロイが必要です）</p>';
+    const list = changes
+      .filter(c => filterStaffId === 'all' || c.staffId === String(filterStaffId))
+      .sort((a, b) => b.changedAt.localeCompare(a.changedAt));
+    if (list.length === 0) return '<p style="color:var(--text-light);text-align:center;padding:20px;">この月の修正履歴はありません</p>';
+    const actionLabels = { add: '追加', update: '修正', delete: '削除' };
+    return `
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>変更日時</th><th>対象日</th><th>スタッフ</th><th>操作</th><th>変更前</th><th>変更後</th><th>理由</th></tr></thead>
+          <tbody>
+            ${list.map(c => `
+              <tr>
+                <td>${c.changedAt ? Utils.formatDateTime(c.changedAt) : ''}</td>
+                <td>${c.date ? Utils.formatDateJP(c.date) : ''}</td>
+                <td>${Utils.escapeHtml(staffNames[c.staffId] || c.staffId)}</td>
+                <td>${actionLabels[c.action] || Utils.escapeHtml(c.action)}</td>
+                <td>${describeRecord(c.before)}</td>
+                <td>${describeRecord(c.after)}</td>
+                <td>
+                  ${Utils.escapeHtml(c.reason)}
+                  ${c.closedPayMonth ? `<br><span class="missing-label">確定済みの${Utils.payMonthLabel(c.closedPayMonth)}支払分の日</span>` : ''}
+                </td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+    `;
   }
 
   function showHistoryAddModal(staff, records) {
@@ -292,10 +365,12 @@ const RecordsScreen = (() => {
         const [h, m] = timeVal.split(':').map(Number);
         const newTime = new Date(dateVal);
         newTime.setHours(h, m, 0, 0);
-        if (!await tryWrite(() => Storage.addTimeRecord({
+        const added = {
           id: Utils.generateId(), staffId: filterStaffId, date: dateVal, type: typeVal,
           time: newTime.toISOString(), modified: true
-        }))) return;
+        };
+        if (!await writeWithReason('add', added, `${describeRecord(added)} を追加`,
+          change => Storage.addTimeRecord(added, change))) return;
         Utils.showToast('打刻を追加しました', 'success');
         cleanup();
         await render();
@@ -394,7 +469,9 @@ const RecordsScreen = (() => {
             const [h, m] = timeVal.split(':').map(Number);
             const newTime = new Date(rec.time);
             newTime.setHours(h, m, 0, 0);
-            if (!await tryWrite(() => Storage.updateTimeRecord({ ...rec, time: newTime.toISOString(), modified: true }))) return;
+            const updated = { ...rec, time: newTime.toISOString(), modified: true };
+            if (!await writeWithReason('update', rec, `${describeRecord(rec)} → ${timeVal}`,
+              change => Storage.updateTimeRecord(updated, change))) return;
             Utils.showToast('打刻時刻を修正しました', 'success');
             modal.classList.remove('active');
             await render();
@@ -406,11 +483,11 @@ const RecordsScreen = (() => {
     // 削除ボタン（不可逆→確認ダイアログ維持）
     msgEl.querySelectorAll('.edit-delete-btn').forEach(btn => {
       btn.addEventListener('click', async function() {
-        const typeName = typeLabels[btn.dataset.type] || btn.dataset.type;
-        const ok = await Utils.showConfirm('打刻削除', `${typeName}の打刻を削除しますか？\nこの操作は元に戻せません。`);
-        if (!ok) return;
+        const rec = staffRecords.find(r => r.id === btn.dataset.id);
+        if (!rec) return;
         await Utils.withLoading(this, async () => {
-          if (!await tryWrite(() => Storage.deleteTimeRecord(btn.dataset.id))) return;
+          if (!await writeWithReason('delete', rec, `${describeRecord(rec)} を削除（変更前の内容は修正履歴に残ります）`,
+            change => Storage.deleteTimeRecord(rec.id, change))) return;
           Utils.showToast('打刻を削除しました');
           modal.classList.remove('active');
           await render();
@@ -430,10 +507,12 @@ const RecordsScreen = (() => {
         const [h, m] = timeVal.split(':').map(Number);
         const newTime = new Date(date);
         newTime.setHours(h, m, 0, 0);
-        if (!await tryWrite(() => Storage.addTimeRecord({
+        const added = {
           id: Utils.generateId(), staffId, date, type,
           time: newTime.toISOString(), modified: true
-        }))) return;
+        };
+        if (!await writeWithReason('add', added, `${describeRecord(added)} を追加`,
+          change => Storage.addTimeRecord(added, change))) return;
         Utils.showToast('打刻を追加しました', 'success');
         modal.classList.remove('active');
         await render();

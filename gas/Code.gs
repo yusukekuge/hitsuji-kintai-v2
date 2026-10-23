@@ -55,6 +55,11 @@ function initializeSpreadsheet() {
   getHeaderedSheet('wage_history', WAGE_HISTORY_HEADERS);
   getHeaderedSheet('min_wage', MIN_WAGE_HEADERS);
 
+  // 給与確定・精算/調整額・打刻の修正履歴
+  getHeaderedSheet('payroll_closed', PAYROLL_CLOSED_HEADERS);
+  getHeaderedSheet('payroll_adjustments', ADJUSTMENT_HEADERS);
+  getHeaderedSheet('record_changes', RECORD_CHANGE_HEADERS);
+
   Logger.log('初期化完了');
 }
 
@@ -64,7 +69,7 @@ function doGet(e) {
   if (action === 'ping') {
     return jsonOk({ message: 'pong' });
   }
-  return jsonOk({ message: '勤怠管理システム API is running', version: '3.2' });
+  return jsonOk({ message: '勤怠管理システム API is running', version: '3.3' });
 }
 
 function doPost(e) {
@@ -94,11 +99,13 @@ function doPost(e) {
       case 'getTimeRecordsByRange':
         return jsonOk(getTimeRecordsByRangeData(body.startDate, body.endDate));
       case 'addTimeRecord':
-        return jsonOk(addTimeRecordData(body.record));
+        return jsonOk(addTimeRecordData(body.record, body.change));
       case 'updateTimeRecord':
-        return jsonOk(updateTimeRecordData(body.record));
+        return jsonOk(updateTimeRecordData(body.record, body.change));
       case 'deleteTimeRecord':
-        return jsonOk(deleteTimeRecordData(body.recordId));
+        return jsonOk(deleteTimeRecordData(body.recordId, body.change));
+      case 'getRecordChanges':
+        return jsonOk(getRecordChangesData(body.startDate, body.endDate));
 
       // === シフト ===
       case 'getShifts':
@@ -121,6 +128,20 @@ function doPost(e) {
         return jsonOk(getMinWagesData());
       case 'addMinWage':
         return jsonOk(addMinWageData(body.entry));
+
+      // === 給与確定・精算/調整額 ===
+      case 'getPayrollClosed':
+        return jsonOk(getPayrollClosedData());
+      case 'closePayroll':
+        return jsonOk(closePayrollData(body.entry));
+      case 'cancelPayrollClose':
+        return jsonOk(cancelPayrollCloseData(body.id, body.reason));
+      case 'getAdjustments':
+        return jsonOk(getAdjustmentsData());
+      case 'addAdjustment':
+        return jsonOk(addAdjustmentData(body.entry));
+      case 'deleteAdjustment':
+        return jsonOk(deleteAdjustmentData(body.id));
 
       default:
         return jsonError('Unknown action: ' + action);
@@ -266,8 +287,10 @@ function getTimeRecordsByRangeData(startDate, endDate) {
 }
 
 // 端末側で作ったIDのまま受け取る。同じIDがすでにあれば追加せず成功を返す（再送で二重登録しないため）
-function addTimeRecordData(record) {
+// change（{ reason }）付き＝勤務記録画面からの追加。record_changes に記録する
+function addTimeRecordData(record, change) {
   if (!record || !record.id) throw new Error('打刻IDがありません');
+  const reason = change ? requireReason_(change) : '';
   return withLock(() => {
     const sheet = getSheet('time_records');
     const lastRow = sheet.getLastRow();
@@ -285,29 +308,39 @@ function addTimeRecordData(record) {
     const range = sheet.getRange(lastRow + 1, 1, 1, row.length);
     range.setNumberFormat('@');
     range.setValues([row]);
+    if (change) logRecordChange_('add', null, timeRecordFromRow_(row), reason);
     return 'ok';
   });
 }
 
-function updateTimeRecordData(record) {
-  const sheet = getSheet('time_records');
-  const rowIdx = findRowIndex(sheet, 0, record.id);
-  if (rowIdx > 0) {
+// 修正・削除は理由が必須。変更前・変更後を record_changes に残す
+function updateTimeRecordData(record, change) {
+  const reason = requireReason_(change);
+  return withLock(() => {
+    const sheet = getSheet('time_records');
+    const rowIdx = findRowIndex(sheet, 0, record.id);
+    if (rowIdx < 0) throw new Error('打刻が見つかりません（すでに削除された可能性があります）');
+    const before = timeRecordFromRow_(sheet.getRange(rowIdx, 1, 1, 6).getValues()[0]);
     const row = [record.id, record.staffId, record.date, record.type, record.time, record.modified ? '1' : '0'];
     const range = sheet.getRange(rowIdx, 1, 1, row.length);
     range.setNumberFormat('@');
     range.setValues([row]);
-  }
-  return 'ok';
+    logRecordChange_('update', before, timeRecordFromRow_(row), reason);
+    return 'ok';
+  });
 }
 
-function deleteTimeRecordData(recordId) {
-  const sheet = getSheet('time_records');
-  const rowIdx = findRowIndex(sheet, 0, recordId);
-  if (rowIdx > 0) {
+function deleteTimeRecordData(recordId, change) {
+  const reason = requireReason_(change);
+  return withLock(() => {
+    const sheet = getSheet('time_records');
+    const rowIdx = findRowIndex(sheet, 0, recordId);
+    if (rowIdx < 0) throw new Error('打刻が見つかりません（すでに削除された可能性があります）');
+    const before = timeRecordFromRow_(sheet.getRange(rowIdx, 1, 1, 6).getValues()[0]);
     sheet.deleteRow(rowIdx);
-  }
-  return 'ok';
+    logRecordChange_('delete', before, null, reason);
+    return 'ok';
+  });
 }
 
 // ===== シフト操作 =====
@@ -583,4 +616,238 @@ function addMinWageData(entry) {
     appendTextRows(getHeaderedSheet('min_wage', MIN_WAGE_HEADERS), [row]);
     return { id: row[0], effectiveDate: row[1], minWage: minWage, note: row[3], createdAt: row[4] };
   });
+}
+
+// ===== 給与確定・精算/調整額・打刻の修正履歴 =====
+// payMonth は支払月 'YYYY-MM'（締め期間は前月21日〜当月20日）。値はすべてテキストで保存し、読み込み時に正規化する
+const PAYROLL_CLOSED_HEADERS = ['id', 'payMonth', 'staffId', 'staffName', 'periodStart', 'periodEnd',
+  'totalPay', 'incomeTax', 'netPay', 'tkcTotalPay', 'tkcIncomeTax', 'tkcNetPay', 'note', 'payslip',
+  'closedAt', 'status', 'cancelledAt', 'cancelReason'];
+const ADJUSTMENT_HEADERS = ['id', 'payMonth', 'staffId', 'name', 'amount', 'taxable', 'note', 'createdAt', 'status', 'deletedAt'];
+const RECORD_CHANGE_HEADERS = ['id', 'changedAt', 'action', 'recordId', 'staffId', 'date', 'before', 'after', 'reason', 'closedPayMonth'];
+
+function normalizePayMonth(value) {
+  const m = String(formatCellValue(value) || '').trim().replace(/\//g, '-').match(/^(\d{4})-(\d{1,2})/);
+  return m ? m[1] + '-' + m[2].padStart(2, '0') : '';
+}
+
+// 'YYYY-MM-DD' → その日を含む締め期間の支払月 'YYYY-MM'
+function payMonthOfDate(dateStr) {
+  const p = dateStr.split('-').map(Number);
+  let y = p[0], m = p[1];
+  if (p[2] > 20) { m++; if (m > 12) { m = 1; y++; } }
+  return y + '-' + String(m).padStart(2, '0');
+}
+
+function parseJsonCell_(value) {
+  if (!value) return null;
+  try { return JSON.parse(String(value)); } catch (e) { return null; }
+}
+
+function isInteger_(n) {
+  return typeof n === 'number' && isFinite(n) && Math.floor(n) === n;
+}
+
+function requireReason_(change) {
+  const reason = String((change && change.reason) || '').trim();
+  if (!reason) throw new Error('修正理由を入力してください');
+  return reason.slice(0, 200);
+}
+
+function timeRecordFromRow_(row) {
+  return {
+    id: String(row[0]), staffId: String(row[1]), date: normalizeDateStr(row[2]),
+    type: String(row[3]), time: String(row[4]), modified: String(row[5]) === '1'
+  };
+}
+
+// --- 給与確定 ---
+function readClosings_() {
+  return sheetToArray(getHeaderedSheet('payroll_closed', PAYROLL_CLOSED_HEADERS)).map(r => ({
+    id: String(r.id),
+    payMonth: normalizePayMonth(r.payMonth),
+    staffId: String(r.staffId),
+    staffName: String(r.staffName || ''),
+    periodStart: normalizeDateStr(r.periodStart),
+    periodEnd: normalizeDateStr(r.periodEnd),
+    totalPay: toYen(r.totalPay),
+    incomeTax: toYen(r.incomeTax),
+    netPay: toYen(r.netPay),
+    tkcTotalPay: toYen(r.tkcTotalPay),
+    tkcIncomeTax: toYen(r.tkcIncomeTax),
+    tkcNetPay: toYen(r.tkcNetPay),
+    note: String(r.note || ''),
+    payslip: parseJsonCell_(r.payslip),
+    closedAt: String(r.closedAt || ''),
+    status: String(r.status) === 'cancelled' ? 'cancelled' : 'active',
+    cancelledAt: String(r.cancelledAt || ''),
+    cancelReason: String(r.cancelReason || '')
+  })).filter(c => c.id && c.payMonth && c.staffId);
+}
+
+function findActiveClosing_(closings, payMonth, staffId) {
+  return closings.find(c => c.status === 'active' && c.payMonth === payMonth && c.staffId === String(staffId)) || null;
+}
+
+function getPayrollClosedData() {
+  return readClosings_();
+}
+
+// 確定：アプリの明細（payslip）を丸ごと保存し、TKCの実支払額を「実際の支払額」とする
+function closePayrollData(entry) {
+  return withLock(() => {
+    const payMonth = normalizePayMonth(entry && entry.payMonth);
+    const staffId = String((entry && entry.staffId) || '');
+    if (!payMonth) throw new Error('支払月が正しくありません');
+    if (!staffId || findRowIndex(getSheet('staff'), 0, staffId) < 0) throw new Error('スタッフが見つかりません');
+    const payslip = entry.payslip;
+    if (!payslip || typeof payslip !== 'object') throw new Error('明細がありません');
+    ['tkcTotalPay', 'tkcIncomeTax', 'tkcNetPay'].forEach(k => {
+      if (!isInteger_(entry[k])) throw new Error('TKCの金額は整数で入力してください');
+    });
+    if (findActiveClosing_(readClosings_(), payMonth, staffId)) throw new Error('この月はすでに確定済みです');
+    const payslipJson = JSON.stringify(payslip);
+    if (payslipJson.length > 45000) throw new Error('明細が大きすぎて保存できません');
+    const row = [
+      Utilities.getUuid(), payMonth, staffId, String(payslip.staffName || ''),
+      normalizeDateStr(entry.periodStart), normalizeDateStr(entry.periodEnd),
+      String(payslip.totalPay), String(payslip.incomeTax), String(payslip.netPay),
+      String(entry.tkcTotalPay), String(entry.tkcIncomeTax), String(entry.tkcNetPay),
+      String(entry.note || '').slice(0, 500), payslipJson,
+      new Date().toISOString(), 'active', '', ''
+    ];
+    appendTextRows(getHeaderedSheet('payroll_closed', PAYROLL_CLOSED_HEADERS), [row]);
+    return { id: row[0], closedAt: row[14] };
+  });
+}
+
+// 確定の取り消し：そのスタッフの一番新しい確定月だけ。理由必須。行は残して status を cancelled にする
+function cancelPayrollCloseData(id, reason) {
+  const why = String(reason || '').trim();
+  if (!why) throw new Error('取り消しの理由を入力してください');
+  return withLock(() => {
+    const closings = readClosings_();
+    const target = closings.find(c => c.id === String(id));
+    if (!target || target.status !== 'active') throw new Error('確定が見つかりません');
+    const latest = closings
+      .filter(c => c.status === 'active' && c.staffId === target.staffId)
+      .reduce((a, c) => (c.payMonth > a.payMonth ? c : a), target);
+    if (latest.id !== target.id) throw new Error('取り消せるのは一番新しい確定月（' + latest.payMonth + '）だけです');
+    const sheet = getHeaderedSheet('payroll_closed', PAYROLL_CLOSED_HEADERS);
+    const rowIdx = findRowIndex(sheet, 0, target.id);
+    const col = name => PAYROLL_CLOSED_HEADERS.indexOf(name) + 1;
+    const now = new Date().toISOString();
+    sheet.getRange(rowIdx, col('status'), 1, 3).setNumberFormat('@').setValues([['cancelled', now, why.slice(0, 200)]]);
+    return 'ok';
+  });
+}
+
+// --- 精算・調整額 ---
+function readAdjustments_() {
+  return sheetToArray(getHeaderedSheet('payroll_adjustments', ADJUSTMENT_HEADERS)).map(r => ({
+    id: String(r.id),
+    payMonth: normalizePayMonth(r.payMonth),
+    staffId: String(r.staffId),
+    name: String(r.name || ''),
+    amount: toYen(r.amount),
+    taxable: String(r.taxable) === '1' || r.taxable === true,
+    note: String(r.note || ''),
+    createdAt: String(r.createdAt || ''),
+    status: String(r.status) === 'deleted' ? 'deleted' : 'active',
+    deletedAt: String(r.deletedAt || '')
+  })).filter(a => a.id && a.payMonth && a.staffId && isFinite(a.amount));
+}
+
+function getAdjustmentsData() {
+  return readAdjustments_().filter(a => a.status === 'active');
+}
+
+function addAdjustmentData(entry) {
+  return withLock(() => {
+    const payMonth = normalizePayMonth(entry && entry.payMonth);
+    const staffId = String((entry && entry.staffId) || '');
+    const name = String(entry.name || '').trim();
+    const amount = toYen(entry.amount);
+    if (!payMonth) throw new Error('支払月が正しくありません');
+    if (!staffId || findRowIndex(getSheet('staff'), 0, staffId) < 0) throw new Error('スタッフが見つかりません');
+    if (!name) throw new Error('名称を入力してください');
+    if (!isInteger_(amount) || amount === 0) throw new Error('金額は0以外の整数で入力してください');
+    if (findActiveClosing_(readClosings_(), payMonth, staffId)) throw new Error('確定済みの月には精算・調整額を追加できません');
+    const row = [Utilities.getUuid(), payMonth, staffId, name.slice(0, 50), String(amount), entry.taxable ? '1' : '0',
+      String(entry.note || '').slice(0, 200), new Date().toISOString(), 'active', ''];
+    appendTextRows(getHeaderedSheet('payroll_adjustments', ADJUSTMENT_HEADERS), [row]);
+    return { id: row[0], createdAt: row[7] };
+  });
+}
+
+// 削除は行を消さずに status を deleted にする（確定済みの月は不可）
+function deleteAdjustmentData(id) {
+  return withLock(() => {
+    const target = readAdjustments_().find(a => a.id === String(id));
+    if (!target || target.status !== 'active') throw new Error('精算・調整額が見つかりません');
+    if (findActiveClosing_(readClosings_(), target.payMonth, target.staffId)) throw new Error('確定済みの月の精算・調整額は変更できません');
+    const sheet = getHeaderedSheet('payroll_adjustments', ADJUSTMENT_HEADERS);
+    const rowIdx = findRowIndex(sheet, 0, target.id);
+    sheet.getRange(rowIdx, ADJUSTMENT_HEADERS.indexOf('status') + 1, 1, 2).setNumberFormat('@').setValues([['deleted', new Date().toISOString()]]);
+    return 'ok';
+  });
+}
+
+// --- 打刻の修正履歴（ロック内で呼ぶこと） ---
+function logRecordChange_(action, before, after, reason) {
+  const ref = after || before;
+  const date = normalizeDateStr(ref.date);
+  const payMonth = date ? payMonthOfDate(date) : '';
+  const closed = payMonth && findActiveClosing_(readClosings_(), payMonth, ref.staffId) ? payMonth : '';
+  appendTextRows(getHeaderedSheet('record_changes', RECORD_CHANGE_HEADERS), [[
+    Utilities.getUuid(), new Date().toISOString(), action, String(ref.id), String(ref.staffId), date,
+    before ? JSON.stringify(before) : '', after ? JSON.stringify(after) : '', reason, closed
+  ]]);
+}
+
+function getRecordChangesData(startDate, endDate) {
+  return sheetToArray(getHeaderedSheet('record_changes', RECORD_CHANGE_HEADERS)).map(r => ({
+    id: String(r.id),
+    changedAt: String(r.changedAt || ''),
+    action: String(r.action || ''),
+    recordId: String(r.recordId || ''),
+    staffId: String(r.staffId || ''),
+    date: normalizeDateStr(r.date),
+    before: parseJsonCell_(r.before),
+    after: parseJsonCell_(r.after),
+    reason: String(r.reason || ''),
+    closedPayMonth: normalizePayMonth(r.closedPayMonth)
+  })).filter(c => (!startDate || c.date >= startDate) && (!endDate || c.date <= endDate));
+}
+
+// ===== 自動バックアップ（週1回、時間主導型トリガーから実行） =====
+// スプレッドシート全体をドライブの「勤怠バックアップ」フォルダにコピーし、
+// 12週（84日）より古いバックアップはゴミ箱へ移す（ただし新しい12件は必ず残す）
+const BACKUP_FOLDER_NAME = '勤怠バックアップ';
+const BACKUP_FILE_PREFIX = '勤怠管理v2_バックアップ_';
+const BACKUP_KEEP_COUNT = 12;
+const BACKUP_KEEP_DAYS = 84;
+
+function weeklyBackup() {
+  const folders = DriveApp.getFoldersByName(BACKUP_FOLDER_NAME);
+  const folder = folders.hasNext() ? folders.next() : DriveApp.createFolder(BACKUP_FOLDER_NAME);
+  const name = BACKUP_FILE_PREFIX + Utilities.formatDate(new Date(), 'Asia/Tokyo', 'yyyyMMdd');
+  DriveApp.getFileById(SS_ID).makeCopy(name, folder);
+
+  const backups = [];
+  const files = folder.getFiles();
+  while (files.hasNext()) {
+    const f = files.next();
+    if (f.getName().indexOf(BACKUP_FILE_PREFIX) === 0) backups.push(f);
+  }
+  backups.sort((a, b) => b.getDateCreated().getTime() - a.getDateCreated().getTime());
+  const limit = Date.now() - BACKUP_KEEP_DAYS * 24 * 60 * 60 * 1000;
+  let trashed = 0;
+  backups.slice(BACKUP_KEEP_COUNT).forEach(f => {
+    if (f.getDateCreated().getTime() < limit) {
+      f.setTrashed(true);
+      trashed++;
+    }
+  });
+  Logger.log('バックアップ作成：' + name + '（ゴミ箱へ移動：' + trashed + '件）');
 }

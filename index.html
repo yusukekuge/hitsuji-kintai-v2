@@ -71,6 +71,21 @@
       </div>
     </div>
 
+    <!-- 理由入力モーダル（打刻の修正・確定の取り消し） -->
+    <div id="reason-modal" class="modal">
+      <div class="modal-content">
+        <h2 id="reason-title"></h2>
+        <p id="reason-message"></p>
+        <p id="reason-warning" class="error-text" style="display:none;font-weight:700;margin:8px 0;"></p>
+        <textarea id="reason-input" class="form-input" rows="3" maxlength="200" placeholder="理由（必須）"></textarea>
+        <p id="reason-error" class="error-text" style="display:none;">理由を入力してください</p>
+        <div class="modal-actions">
+          <button id="reason-cancel" class="btn btn-secondary">キャンセル</button>
+          <button id="reason-ok" class="btn btn-primary">OK</button>
+        </div>
+      </div>
+    </div>
+
     <!-- ローディングオーバーレイ -->
     <div id="loading-overlay" class="loading-overlay">
       <div class="loading-spinner"></div>

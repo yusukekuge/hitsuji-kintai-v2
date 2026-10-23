@@ -154,16 +154,76 @@ const Utils = (() => {
     return { start, end };
   }
 
+  // 支払月キー 'YYYY-MM'（month: 0-indexed）
+  function payMonthKey(year, month) {
+    return `${year}-${String(month + 1).padStart(2, '0')}`;
+  }
+
+  // 'YYYY-MM-DD' → その日を含む締め期間の支払月 'YYYY-MM'（21日以降は翌月支払）
+  function payMonthOf(dateStr) {
+    let [y, m, d] = dateStr.split('-').map(Number);
+    if (d > 20) { m++; if (m > 12) { m = 1; y++; } }
+    return `${y}-${String(m).padStart(2, '0')}`;
+  }
+
+  // 'YYYY-MM' → 次の支払月
+  function nextPayMonth(payMonth) {
+    let [y, m] = payMonth.split('-').map(Number);
+    m++;
+    if (m > 12) { m = 1; y++; }
+    return `${y}-${String(m).padStart(2, '0')}`;
+  }
+
+  // 'YYYY-MM' → '2026年7月'
+  function payMonthLabel(payMonth) {
+    const [y, m] = payMonth.split('-').map(Number);
+    return `${y}年${m}月`;
+  }
+
   // 日付が範囲内かチェック
   function isDateInRange(date, start, end) {
     return date >= start && date <= end;
+  }
+
+  // 理由の入力ダイアログ。入力された理由（空欄は不可）か、キャンセルなら null
+  function promptReason(title, message, warning = '') {
+    return new Promise(resolve => {
+      const modal = document.getElementById('reason-modal');
+      const input = document.getElementById('reason-input');
+      const error = document.getElementById('reason-error');
+      document.getElementById('reason-title').textContent = title;
+      document.getElementById('reason-message').textContent = message;
+      const warnEl = document.getElementById('reason-warning');
+      warnEl.textContent = warning;
+      warnEl.style.display = warning ? 'block' : 'none';
+      input.value = '';
+      error.style.display = 'none';
+      modal.classList.add('active');
+      input.focus();
+      const ok = document.getElementById('reason-ok');
+      const cancel = document.getElementById('reason-cancel');
+      function cleanup() {
+        modal.classList.remove('active');
+        ok.removeEventListener('click', onOk);
+        cancel.removeEventListener('click', onCancel);
+      }
+      function onOk() {
+        const reason = input.value.trim();
+        if (!reason) { error.style.display = 'block'; input.focus(); return; }
+        cleanup();
+        resolve(reason);
+      }
+      function onCancel() { cleanup(); resolve(null); }
+      ok.addEventListener('click', onOk);
+      cancel.addEventListener('click', onCancel);
+    });
   }
 
   return {
     formatDate, formatDateJP, formatTime, formatDateTime,
     timeToDate, minutesToHM, minutesToHMJP, formatCurrency,
     generateId, getDaysInMonth, getDayOfWeek, DAY_NAMES,
-    today, now, diffMinutes, showToast, showConfirm, escapeHtml,
-    getPayPeriod, isDateInRange, btnLoading, withLoading
+    today, now, diffMinutes, showToast, showConfirm, promptReason, escapeHtml,
+    getPayPeriod, payMonthKey, payMonthOf, nextPayMonth, payMonthLabel, isDateInRange, btnLoading, withLoading
   };
 })();

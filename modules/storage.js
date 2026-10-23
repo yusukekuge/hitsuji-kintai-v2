@@ -173,37 +173,157 @@ const Storage = (() => {
   }
 
   // 打刻の追加・修正・削除は、GASモードで失敗したら例外にする（端末内に黙って保存しない）
-  async function addTimeRecord(record) {
+  // change（{ reason }）を渡すと、GAS側で変更前・変更後を record_changes に記録する（修正・削除は必須）
+  async function addTimeRecord(record, change) {
     if (useGas) {
-      await gasRequest('addTimeRecord', { record });
+      await gasRequest('addTimeRecord', change ? { record, change } : { record });
       return;
     }
     const all = localGet('time_records');
     all.push(record);
     localSet('time_records', all);
+    if (change) logLocalChange('add', null, record, change);
   }
 
-  async function updateTimeRecord(record) {
+  async function updateTimeRecord(record, change) {
     if (useGas) {
-      await gasRequest('updateTimeRecord', { record });
+      await gasRequest('updateTimeRecord', { record, change });
       return;
     }
     const all = localGet('time_records');
     const idx = all.findIndex(r => r.id === record.id);
     if (idx >= 0) {
+      logLocalChange('update', all[idx], record, change);
       all[idx] = record;
       localSet('time_records', all);
     }
   }
 
-  async function deleteTimeRecord(recordId) {
+  async function deleteTimeRecord(recordId, change) {
     if (useGas) {
-      await gasRequest('deleteTimeRecord', { recordId });
+      await gasRequest('deleteTimeRecord', { recordId, change });
       return;
     }
     let all = localGet('time_records');
+    const before = all.find(r => r.id === recordId);
+    if (before) logLocalChange('delete', before, null, change);
     all = all.filter(r => r.id !== recordId);
     localSet('time_records', all);
+  }
+
+  function logLocalChange(action, before, after, change) {
+    const ref = after || before;
+    const list = localGet('record_changes');
+    list.push({ id: Utils.generateId(), changedAt: Utils.now(), action, recordId: ref.id, staffId: ref.staffId, date: ref.date,
+      before, after, reason: (change && change.reason) || '', closedPayMonth: '' });
+    localSet('record_changes', list);
+  }
+
+  // 取得できない場合（GAS再デプロイ前など）は null
+  async function getRecordChanges(startDate, endDate) {
+    if (useGas) {
+      try { return await gasRequest('getRecordChanges', { startDate, endDate }); }
+      catch (e) { console.warn('GAS getRecordChanges failed:', e.message); return null; }
+    }
+    return localGet('record_changes').filter(c => (!startDate || c.date >= startDate) && (!endDate || c.date <= endDate));
+  }
+
+  // ===== 給与確定・精算/調整額 =====
+  const numOr = (v, d = 0) => { const n = toYen(v); return isFinite(n) ? n : d; };
+
+  function normalizeClosings(list) {
+    return (list || []).map(c => {
+      let payslip = c.payslip;
+      if (typeof payslip === 'string') { try { payslip = JSON.parse(payslip); } catch { payslip = null; } }
+      return {
+        id: String(c.id || ''),
+        payMonth: String(c.payMonth || '').slice(0, 7),
+        staffId: String(c.staffId || ''),
+        staffName: String(c.staffName || ''),
+        periodStart: normalizeDateStr(c.periodStart),
+        periodEnd: normalizeDateStr(c.periodEnd),
+        totalPay: numOr(c.totalPay), incomeTax: numOr(c.incomeTax), netPay: numOr(c.netPay),
+        tkcTotalPay: numOr(c.tkcTotalPay), tkcIncomeTax: numOr(c.tkcIncomeTax), tkcNetPay: numOr(c.tkcNetPay),
+        note: String(c.note || ''),
+        payslip,
+        closedAt: String(c.closedAt || ''),
+        status: c.status === 'cancelled' ? 'cancelled' : 'active',
+        cancelledAt: String(c.cancelledAt || ''),
+        cancelReason: String(c.cancelReason || '')
+      };
+    }).filter(c => c.id && c.payMonth && c.staffId && c.payslip);
+  }
+
+  function normalizeAdjustments(list) {
+    return (list || []).map(a => ({
+      id: String(a.id || ''),
+      payMonth: String(a.payMonth || '').slice(0, 7),
+      staffId: String(a.staffId || ''),
+      name: String(a.name || ''),
+      amount: numOr(a.amount, NaN),
+      taxable: a.taxable === true || String(a.taxable) === '1',
+      note: String(a.note || ''),
+      createdAt: String(a.createdAt || '')
+    })).filter(a => a.id && a.payMonth && a.staffId && isFinite(a.amount) && a.status !== 'deleted');
+  }
+
+  // 取得できない場合（GAS再デプロイ前など）は null → 確定・精算の機能を使えない状態で表示する
+  async function getPayrollClosed() {
+    if (useGas) {
+      try { return normalizeClosings(await gasRequest('getPayrollClosed')); }
+      catch (e) { console.warn('GAS getPayrollClosed failed:', e.message); return null; }
+    }
+    return normalizeClosings(localGet('payroll_closed'));
+  }
+
+  async function getAdjustments() {
+    if (useGas) {
+      try { return normalizeAdjustments(await gasRequest('getAdjustments')); }
+      catch (e) { console.warn('GAS getAdjustments failed:', e.message); return null; }
+    }
+    return normalizeAdjustments(localGet('payroll_adjustments').filter(a => a.status !== 'deleted'));
+  }
+
+  // 書き込みは localStorage にフォールバックしない
+  async function closePayroll(entry) {
+    if (useGas) {
+      try { return await gasRequest('closePayroll', { entry }); }
+      catch (e) { throw toWriteError(e); }
+    }
+    const all = localGet('payroll_closed');
+    const saved = { ...entry, id: Utils.generateId(), closedAt: Utils.now(), status: 'active',
+      staffName: entry.payslip.staffName, totalPay: entry.payslip.totalPay, incomeTax: entry.payslip.incomeTax, netPay: entry.payslip.netPay };
+    all.push(saved);
+    localSet('payroll_closed', all);
+    return saved;
+  }
+
+  async function cancelPayrollClose(id, reason) {
+    if (useGas) {
+      try { return await gasRequest('cancelPayrollClose', { id, reason }); }
+      catch (e) { throw toWriteError(e); }
+    }
+    localSet('payroll_closed', localGet('payroll_closed').map(c => c.id === id ? { ...c, status: 'cancelled', cancelledAt: Utils.now(), cancelReason: reason } : c));
+  }
+
+  async function addAdjustment(entry) {
+    if (useGas) {
+      try { return await gasRequest('addAdjustment', { entry }); }
+      catch (e) { throw toWriteError(e); }
+    }
+    const all = localGet('payroll_adjustments');
+    const saved = { ...entry, id: Utils.generateId(), createdAt: Utils.now(), status: 'active' };
+    all.push(saved);
+    localSet('payroll_adjustments', all);
+    return saved;
+  }
+
+  async function deleteAdjustment(id) {
+    if (useGas) {
+      try { return await gasRequest('deleteAdjustment', { id }); }
+      catch (e) { throw toWriteError(e); }
+    }
+    localSet('payroll_adjustments', localGet('payroll_adjustments').map(a => a.id === id ? { ...a, status: 'deleted', deletedAt: Utils.now() } : a));
   }
 
   // ===== 打刻の未送信キュー =====
@@ -392,7 +512,7 @@ const Storage = (() => {
 
   // GASが時給履歴に未対応（再デプロイ前）のときのエラーを分かりやすくする
   function toWriteError(e) {
-    if (/Unknown action/.test(e.message)) return new Error('GASの再デプロイが必要です（時給履歴に未対応のGASです）');
+    if (/Unknown action/.test(e.message)) return new Error('GASの再デプロイが必要です（この機能に未対応のGASです）');
     return e;
   }
 
@@ -506,7 +626,8 @@ const Storage = (() => {
     init, setGasUrl, getGasUrl, isGasMode, clearStaffCache,
     getStaff, getAllStaff, saveStaff, deleteStaff,
     getTimeRecords, getTimeRecordsByMonth, getTimeRecordsByRange,
-    addTimeRecord, updateTimeRecord, deleteTimeRecord,
+    addTimeRecord, updateTimeRecord, deleteTimeRecord, getRecordChanges,
+    getPayrollClosed, closePayroll, cancelPayrollClose, getAdjustments, addAdjustment, deleteAdjustment,
     addTimeRecordQueued, flushPendingTimeRecords, getPendingTimeRecords, isSendingPending, onPendingChange, PENDING_KEY,
     getShifts, saveShift, deleteShift, saveShiftsBulk,
     getWageHistory, addWageHistory, deleteWageHistory, getMinWages, addMinWage,
