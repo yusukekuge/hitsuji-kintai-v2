@@ -16,6 +16,8 @@ const DashboardScreen = (() => {
       Storage.getWageHistory()
     ]);
     const wageTable = Calc.buildWageTable(staff, wageHistory);
+    // 対象期間の打刻漏れ
+    const punchIssues = Calc.findPunchIssues(records, staff.map(s => s.id), Utils.today());
 
     const summaries = [];
     for (const s of staff) {
@@ -43,7 +45,8 @@ const DashboardScreen = (() => {
       }
 
       const warnings = Calc.calcDependentWarning(annualTotal, month + 1);
-      summaries.push({ staff: s, workDays, totalWork, totalNight, annualTotal, warnings });
+      const missing = punchIssues.filter(i => i.staffId === s.id).length;
+      summaries.push({ staff: s, workDays, totalWork, totalNight, annualTotal, warnings, missing });
     }
 
     container.innerHTML = `
@@ -53,6 +56,9 @@ const DashboardScreen = (() => {
           対象期間：${period.start} 〜 ${period.end}
           ${Storage.isGasMode() ? '<span class="badge badge-success" style="margin-left:8px;">GAS接続中</span>' : '<span class="badge badge-warning" style="margin-left:8px;">ローカルモード</span>'}
         </p>
+        ${punchIssues.length > 0
+          ? `<div class="alert-box alert-danger" style="color:var(--danger);"><strong>打刻漏れ ${punchIssues.length}件</strong>（対象期間内）。勤務記録の「修正」から打刻を追加してください。</div>`
+          : '<div class="alert-box alert-info">打刻漏れ 0件（対象期間内）</div>'}
       </div>
 
       <div class="summary-grid">
@@ -63,6 +69,7 @@ const DashboardScreen = (() => {
             <div class="flex-between mb-8"><span>総労働時間</span><span>${Utils.minutesToHMJP(sum.totalWork)}</span></div>
             <div class="flex-between mb-8"><span>深夜時間</span><span>${Utils.minutesToHMJP(sum.totalNight)}</span></div>
             <div class="flex-between mb-8"><span>年間累計</span><span>${Utils.formatCurrency(sum.annualTotal)}</span></div>
+            ${sum.missing > 0 ? `<div class="flex-between mb-8" style="color:var(--danger);font-weight:700;"><span>打刻漏れ</span><span>${sum.missing}件</span></div>` : ''}
             ${sum.warnings.map(w => `
               <div class="alert-box alert-${w.type}"><strong>${w.line}</strong> ${w.message}</div>
             `).join('')}

@@ -9,6 +9,17 @@ const RecordsScreen = (() => {
     currentMonth = now.getMonth();
   }
 
+  // GASへの保存に失敗したらエラーを表示して false（端末内に黙って保存しない）
+  async function tryWrite(fn) {
+    try {
+      await fn();
+      return true;
+    } catch (e) {
+      Utils.showToast('保存できませんでした：' + e.message, 'error');
+      return false;
+    }
+  }
+
   async function render() {
     if (currentYear === undefined) init();
     const container = document.getElementById('screen-records');
@@ -20,16 +31,18 @@ const RecordsScreen = (() => {
 
     const filteredStaff = filterStaffId === 'all' ? staff : staff.filter(s => s.id === filterStaffId);
 
+    // 打刻が1件でもある日を表示し、打刻漏れ（退勤なし・出勤なし・休憩の片方なし）を判定する
+    const todayStr = Utils.today();
     const dayData = [];
     for (let d = 1; d <= daysInMonth; d++) {
       const dateStr = `${currentYear}-${String(currentMonth + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
       filteredStaff.forEach(s => {
+        if (!records.some(r => r.staffId === s.id && r.date === dateStr)) return;
         const dw = Calc.calcDayWork(records, s.id, dateStr);
-        if (dw.clockIn || dw.clockOut) {
-          dayData.push({ ...dw, staffName: s.name });
-        }
+        dayData.push({ ...dw, staffName: s.name, issues: Calc.detectPunchIssues(records, s.id, dateStr, todayStr) });
       });
     }
+    const missingCount = dayData.filter(dw => dw.issues.length > 0).length;
 
     // 打刻履歴データ
     const typeLabelsHistory = { clock_in: '出勤', break_start: '休憩開始', break_end: '休憩終了', clock_out: '退勤' };
@@ -107,6 +120,10 @@ const RecordsScreen = (() => {
         </div>
 
         <div class="tab-content ${activeTab === 'records' ? 'active' : ''}" id="tab-records">
+          ${missingCount > 0 ? `
+            <div class="alert-box alert-danger" style="color:var(--danger);">
+              <strong>打刻漏れが${missingCount}件あります。</strong>赤い行の「修正」から打刻を追加してください（出勤・退勤の漏れは給与計算で0時間、休憩の漏れは休憩時間が正しく計算されません）。
+            </div>` : ''}
           <div class="table-wrap">
             <table>
               <thead>
@@ -115,9 +132,12 @@ const RecordsScreen = (() => {
               <tbody>
                 ${dayData.length === 0 ? '<tr><td colspan="8" style="text-align:center;color:var(--text-light);">記録がありません</td></tr>' : ''}
                 ${dayData.map(dw => `
-                  <tr>
+                  <tr class="${dw.issues.length > 0 ? 'row-missing' : ''}">
                     <td>${Utils.formatDateJP(dw.date)}</td>
-                    <td>${Utils.escapeHtml(dw.staffName)}</td>
+                    <td>
+                      ${Utils.escapeHtml(dw.staffName)}
+                      ${dw.issues.length > 0 ? `<br><span class="missing-label">打刻漏れ（${dw.issues.join('・')}）</span>` : ''}
+                    </td>
                     <td>${dw.clockIn ? Utils.formatTime(dw.clockIn) : '-'}</td>
                     <td>${dw.clockOut ? Utils.formatTime(dw.clockOut) : '-'}</td>
                     <td class="num">${dw.breakMinutes > 0 ? Utils.minutesToHM(dw.breakMinutes) : '-'}</td>
@@ -191,9 +211,7 @@ const RecordsScreen = (() => {
               const [h, m] = timeVal.split(':').map(Number);
               const newTime = new Date(rec.time);
               newTime.setHours(h, m, 0, 0);
-              rec.time = newTime.toISOString();
-              rec.modified = true;
-              await Storage.updateTimeRecord(rec);
+              if (!await tryWrite(() => Storage.updateTimeRecord({ ...rec, time: newTime.toISOString(), modified: true }))) return;
               Utils.showToast('打刻時刻を修正しました', 'success');
               await render();
             }
@@ -211,7 +229,7 @@ const RecordsScreen = (() => {
         const ok = await Utils.showConfirm('打刻削除', `${typeName}の打刻を削除しますか？\nこの操作は元に戻せません。`);
         if (!ok) return;
         await Utils.withLoading(this, async () => {
-          await Storage.deleteTimeRecord(btn.dataset.id);
+          if (!await tryWrite(() => Storage.deleteTimeRecord(btn.dataset.id))) return;
           Utils.showToast('打刻を削除しました');
           await render();
         });
@@ -274,10 +292,10 @@ const RecordsScreen = (() => {
         const [h, m] = timeVal.split(':').map(Number);
         const newTime = new Date(dateVal);
         newTime.setHours(h, m, 0, 0);
-        await Storage.addTimeRecord({
+        if (!await tryWrite(() => Storage.addTimeRecord({
           id: Utils.generateId(), staffId: filterStaffId, date: dateVal, type: typeVal,
           time: newTime.toISOString(), modified: true
-        });
+        }))) return;
         Utils.showToast('打刻を追加しました', 'success');
         cleanup();
         await render();
@@ -376,9 +394,7 @@ const RecordsScreen = (() => {
             const [h, m] = timeVal.split(':').map(Number);
             const newTime = new Date(rec.time);
             newTime.setHours(h, m, 0, 0);
-            rec.time = newTime.toISOString();
-            rec.modified = true;
-            await Storage.updateTimeRecord(rec);
+            if (!await tryWrite(() => Storage.updateTimeRecord({ ...rec, time: newTime.toISOString(), modified: true }))) return;
             Utils.showToast('打刻時刻を修正しました', 'success');
             modal.classList.remove('active');
             await render();
@@ -394,7 +410,7 @@ const RecordsScreen = (() => {
         const ok = await Utils.showConfirm('打刻削除', `${typeName}の打刻を削除しますか？\nこの操作は元に戻せません。`);
         if (!ok) return;
         await Utils.withLoading(this, async () => {
-          await Storage.deleteTimeRecord(btn.dataset.id);
+          if (!await tryWrite(() => Storage.deleteTimeRecord(btn.dataset.id))) return;
           Utils.showToast('打刻を削除しました');
           modal.classList.remove('active');
           await render();
@@ -414,10 +430,10 @@ const RecordsScreen = (() => {
         const [h, m] = timeVal.split(':').map(Number);
         const newTime = new Date(date);
         newTime.setHours(h, m, 0, 0);
-        await Storage.addTimeRecord({
+        if (!await tryWrite(() => Storage.addTimeRecord({
           id: Utils.generateId(), staffId, date, type,
           time: newTime.toISOString(), modified: true
-        });
+        }))) return;
         Utils.showToast('打刻を追加しました', 'success');
         modal.classList.remove('active');
         await render();

@@ -25,34 +25,34 @@ const Storage = (() => {
   function clearStaffCache() { _staffCache = null; }
 
   // --- GAS通信（15秒タイムアウト付き） ---
+  // 通信エラー・タイムアウト・JSONとして読めない応答・success:true 以外の応答は、すべて例外にする
   async function gasRequest(action, data = {}) {
     const payload = { action, ...data };
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 15000);
     try {
-      const res = await fetch(gasUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-        body: JSON.stringify(payload),
-        signal: controller.signal
-      });
-      clearTimeout(timeoutId);
-      const json = await res.json();
-      if (json.error) {
-        const err = new Error(json.error);
+      let json;
+      try {
+        const res = await fetch(gasUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+          body: JSON.stringify(payload),
+          signal: controller.signal
+        });
+        json = await res.json();
+      } catch (e) {
+        if (controller.signal.aborted) throw new Error('GASとの通信がタイムアウトしました（15秒）');
+        throw new Error(e instanceof SyntaxError ? 'GASの応答を読み取れませんでした' : `GASと通信できませんでした（${e.message}）`);
+      }
+      if (!json || json.success !== true) {
+        const err = new Error((json && json.error) || 'GASの応答が不正です');
         err.fromGas = true; // GAS側でのエラー（通信エラーと区別する）
         throw err;
       }
       return json.data !== undefined ? json.data : json;
-    } catch (e) {
+    } finally {
       clearTimeout(timeoutId);
-      throw e;
     }
-  }
-
-  // --- GAS非同期保存（バックグラウンド、エラー時はwarnのみ） ---
-  function gasRequestBackground(action, data = {}) {
-    gasRequest(action, data).catch(e => console.warn(`BG ${action} failed:`, e.message));
   }
 
   // --- ローカルストレージ操作 ---
@@ -92,9 +92,15 @@ const Storage = (() => {
         const result = normalizeStaff(await gasRequest('getStaff'));
         _staffCache = result;
         _staffCacheTime = Date.now();
+        try { localSet('gas_staff_cache', result); } catch { /* 保存できなくても続行 */ }
         return result;
       }
-      catch (e) { console.warn('GAS getStaff failed:', e.message); }
+      catch (e) {
+        console.warn('GAS getStaff failed:', e.message);
+        // 通信できないときは前回GASから取得したスタッフ一覧で打刻できるようにする（打刻は未送信キューへ）
+        const cached = localGet('gas_staff_cache');
+        if (cached.length > 0) return cached.filter(s => s.active !== false);
+      }
     }
     const local = localGet('staff').filter(s => s.active !== false);
     _staffCache = local;
@@ -166,31 +172,21 @@ const Storage = (() => {
     return localGet('time_records').filter(r => r.date >= startDate && r.date <= endDate);
   }
 
+  // 打刻の追加・修正・削除は、GASモードで失敗したら例外にする（端末内に黙って保存しない）
   async function addTimeRecord(record) {
     if (useGas) {
-      try { await gasRequest('addTimeRecord', { record }); return; }
-      catch (e) { console.warn('GAS addTimeRecord failed:', e.message); }
+      await gasRequest('addTimeRecord', { record });
+      return;
     }
     const all = localGet('time_records');
     all.push(record);
     localSet('time_records', all);
   }
 
-  // バックグラウンド版（UIをブロックしない）
-  function addTimeRecordBackground(record) {
-    if (useGas) {
-      gasRequestBackground('addTimeRecord', { record });
-    } else {
-      const all = localGet('time_records');
-      all.push(record);
-      localSet('time_records', all);
-    }
-  }
-
   async function updateTimeRecord(record) {
     if (useGas) {
-      try { await gasRequest('updateTimeRecord', { record }); return; }
-      catch (e) { console.warn('GAS updateTimeRecord failed:', e.message); }
+      await gasRequest('updateTimeRecord', { record });
+      return;
     }
     const all = localGet('time_records');
     const idx = all.findIndex(r => r.id === record.id);
@@ -202,12 +198,120 @@ const Storage = (() => {
 
   async function deleteTimeRecord(recordId) {
     if (useGas) {
-      try { await gasRequest('deleteTimeRecord', { recordId }); return; }
-      catch (e) { console.warn('GAS deleteTimeRecord failed:', e.message); }
+      await gasRequest('deleteTimeRecord', { recordId });
+      return;
     }
     let all = localGet('time_records');
     all = all.filter(r => r.id !== recordId);
     localSet('time_records', all);
+  }
+
+  // ===== 打刻の未送信キュー =====
+  // 打刻はまず端末内のキュー（localStorage）に保存してからGASへ送り、
+  // GASへの保存を確認できたものだけキューから消す。失敗したものは自動で再送する
+  // （30秒ごと・アプリを開いたとき・通信が戻ったとき。タイマー等は app.js）
+  const PENDING_KEY = 'pending_time_records';
+  const FLUSH_LOCK_KEY = 'pending_time_records_lock';
+  const tabId = Utils.generateId();
+  const pendingListeners = [];
+  let flushPromise = null;
+  let sending = false;
+
+  // [{ record, queuedAt, attempts, lastError }]
+  function getPendingTimeRecords() { return localGet(PENDING_KEY); }
+  function savePending(list) { localSet(PENDING_KEY, list); }
+  function isSendingPending() { return sending; }
+  function onPendingChange(fn) { pendingListeners.push(fn); }
+  function notifyPending() {
+    pendingListeners.forEach(fn => { try { fn(); } catch (e) { console.error(e); } });
+  }
+
+  // 同じ端末の別タブと同時に再送しないための簡易ロック（60秒で失効）
+  function acquireFlushLock() {
+    try {
+      const lock = JSON.parse(localStorage.getItem(FLUSH_LOCK_KEY) || 'null');
+      if (lock && lock.owner !== tabId && lock.until > Date.now()) return false;
+      localStorage.setItem(FLUSH_LOCK_KEY, JSON.stringify({ owner: tabId, until: Date.now() + 60000 }));
+    } catch { /* localStorage が使えない場合はロックなしで送る */ }
+    return true;
+  }
+  function releaseFlushLock() {
+    try {
+      const lock = JSON.parse(localStorage.getItem(FLUSH_LOCK_KEY) || 'null');
+      if (lock && lock.owner === tabId) localStorage.removeItem(FLUSH_LOCK_KEY);
+    } catch { /* noop */ }
+  }
+
+  // 1件送信。GASへの保存を確認できなければ例外
+  async function sendPendingRecord(item) {
+    // 再送時は先に存在を確認する：前回の送信が実は届いていた場合に二重登録しない
+    // （GASの再デプロイ前＝同一IDチェックがないGASでも二重にならないように）
+    if (item.attempts > 0) {
+      const saved = await gasRequest('getTimeRecords', { date: item.record.date });
+      if (Array.isArray(saved) && saved.some(r => String(r.id) === String(item.record.id))) return;
+    }
+    await gasRequest('addTimeRecord', { record: item.record });
+  }
+
+  function flushPendingTimeRecords() {
+    if (flushPromise) return flushPromise;
+    flushPromise = (async () => {
+      if (!useGas) {
+        // ローカルモード：端末内の打刻記録へ移す
+        const pending = getPendingTimeRecords();
+        if (pending.length === 0) return;
+        const all = localGet('time_records');
+        pending.forEach(i => { if (!all.some(r => r.id === i.record.id)) all.push(i.record); });
+        localSet('time_records', all);
+        savePending([]);
+        return;
+      }
+      if (getPendingTimeRecords().length === 0 || !acquireFlushLock()) return;
+      sending = true;
+      notifyPending();
+      const tried = new Set();
+      try {
+        // 送信中に追加された打刻も拾うため、毎回キューを読み直す
+        for (;;) {
+          const item = getPendingTimeRecords().find(i => !tried.has(i.record.id));
+          if (!item) break;
+          tried.add(item.record.id);
+          acquireFlushLock(); // ロック延長
+          try {
+            await sendPendingRecord(item);
+            savePending(getPendingTimeRecords().filter(i => i.record.id !== item.record.id));
+          } catch (e) {
+            console.warn('打刻の送信に失敗しました:', e.message);
+            savePending(getPendingTimeRecords().map(i => i.record.id === item.record.id
+              ? { ...i, attempts: i.attempts + 1, lastError: e.message, lastTriedAt: Utils.now() } : i));
+            if (!e.fromGas) break; // 通信エラーなら残りも失敗するので次回の再送に回す
+          }
+          notifyPending();
+        }
+      } finally {
+        sending = false;
+        releaseFlushLock();
+        notifyPending();
+      }
+    })().finally(() => { flushPromise = null; });
+    return flushPromise;
+  }
+
+  // 打刻を記録する。GASへの保存を確認できたら true、未送信としてキューに残ったら false
+  async function addTimeRecordQueued(record) {
+    try {
+      const list = getPendingTimeRecords();
+      list.push({ record, queuedAt: Utils.now(), attempts: 0, lastError: '' });
+      savePending(list);
+    } catch (e) {
+      // 端末に保存できない場合（プライベートモード等）は直接送る
+      console.warn('未送信キューに保存できません:', e.message);
+      await addTimeRecord(record);
+      return true;
+    }
+    notifyPending();
+    await flushPendingTimeRecords();
+    return !getPendingTimeRecords().some(i => i.record.id === record.id);
   }
 
   // ===== シフト =====
@@ -402,7 +506,8 @@ const Storage = (() => {
     init, setGasUrl, getGasUrl, isGasMode, clearStaffCache,
     getStaff, getAllStaff, saveStaff, deleteStaff,
     getTimeRecords, getTimeRecordsByMonth, getTimeRecordsByRange,
-    addTimeRecord, addTimeRecordBackground, updateTimeRecord, deleteTimeRecord,
+    addTimeRecord, updateTimeRecord, deleteTimeRecord,
+    addTimeRecordQueued, flushPendingTimeRecords, getPendingTimeRecords, isSendingPending, onPendingChange, PENDING_KEY,
     getShifts, saveShift, deleteShift, saveShiftsBulk,
     getWageHistory, addWageHistory, deleteWageHistory, getMinWages, addMinWage,
     getSetting, setSetting, getPin, setPin, verifyPin,

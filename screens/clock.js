@@ -12,17 +12,50 @@ const ClockScreen = (() => {
       Storage.getTimeRecords(todayStr)
     ]);
     cachedStaff = staff;
-    cachedRecords = records;
+    cachedRecords = mergePending(records, todayStr);
 
-    renderUI(container, staff, records, todayStr);
+    renderUI(container, staff, cachedRecords, todayStr);
+  }
+
+  // 未送信キューの打刻を当日分の表示に合流させる（GASにまだない打刻も状態に反映する）
+  function mergePending(records, todayStr) {
+    const ids = new Set(records.map(r => r.id));
+    const pending = Storage.getPendingTimeRecords()
+      .map(i => i.record)
+      .filter(r => r.date === todayStr && !ids.has(r.id));
+    return records.concat(pending);
+  }
+
+  // 送信状態（上部の「送信中…」と、未送信がある間ずっと出る赤い帯）
+  function renderSyncStatusHTML() {
+    const pending = Storage.getPendingTimeRecords();
+    const sending = Storage.isSendingPending();
+    // 1回目の送信中だけは「送信中…」のみ。失敗したもの・前回から残っているものがあれば赤い帯
+    const showBanner = pending.length > 0 && !(sending && pending.every(i => i.attempts === 0));
+    return `
+      ${sending ? '<div class="sync-sending">送信中…</div>' : ''}
+      ${showBanner ? `
+        <div class="sync-banner" role="alert">
+          <span>⚠ 未送信の打刻が${pending.length}件あります。自動で再送しています</span>
+          <button class="btn btn-sm btn-danger" id="sync-retry-btn" ${sending ? 'disabled' : ''}>今すぐ再送</button>
+        </div>` : ''}
+    `;
   }
 
   // UIだけ再描画（データ取得なし＝即座に完了）
   function renderUI(container, staff, records, todayStr) {
+    const pendingById = new Map(Storage.getPendingTimeRecords().map(i => [i.record.id, i]));
+    const sending = Storage.isSendingPending();
+    const allRecords = mergePending(records, todayStr);
     const statuses = {};
     staff.forEach(s => {
-      const sr = records.filter(r => r.staffId === s.id).sort((a, b) => a.time.localeCompare(b.time));
+      const sr = allRecords.filter(r => r.staffId === s.id).sort((a, b) => a.time.localeCompare(b.time));
       const last = sr[sr.length - 1];
+      const pendingItems = sr.map(r => pendingById.get(r.id)).filter(Boolean);
+      // 1回目の送信中は「送信中」、失敗済み・残っているものは「未送信」
+      const pendingMark = pendingItems.length === 0 ? ''
+        : sending && pendingItems.every(i => i.attempts === 0) ? '<span class="badge badge-warning">送信中</span>'
+        : '<span class="badge badge-danger">未送信</span>';
       if (!last) {
         statuses[s.id] = { status: 'none', label: '未出勤', cssClass: '' };
       } else if (last.type === 'clock_in') {
@@ -34,9 +67,12 @@ const ClockScreen = (() => {
       } else if (last.type === 'clock_out') {
         statuses[s.id] = { status: 'done', label: `退勤済 ${Utils.formatTime(last.time)}`, cssClass: 'status-done' };
       }
+      statuses[s.id].pendingMark = pendingMark;
     });
 
     container.innerHTML = `
+      <div id="clock-sync-status">${renderSyncStatusHTML()}</div>
+
       <div class="card">
         <div class="clock-display">
           <div class="date">${Utils.formatDateJP(new Date())}</div>
@@ -73,9 +109,12 @@ const ClockScreen = (() => {
           ${staff.map(s => `
             <li class="status-item">
               <span class="name">${Utils.escapeHtml(s.name)}</span>
-              <span class="badge ${statuses[s.id].status === 'working' ? 'badge-success' :
-                statuses[s.id].status === 'break' ? 'badge-warning' :
-                statuses[s.id].status === 'done' ? 'badge-info' : ''}">${statuses[s.id].label}</span>
+              <span>
+                ${statuses[s.id].pendingMark}
+                <span class="badge ${statuses[s.id].status === 'working' ? 'badge-success' :
+                  statuses[s.id].status === 'break' ? 'badge-warning' :
+                  statuses[s.id].status === 'done' ? 'badge-info' : ''}">${statuses[s.id].label}</span>
+              </span>
             </li>
           `).join('')}
         </ul>
@@ -95,6 +134,23 @@ const ClockScreen = (() => {
     container.querySelectorAll('.clock-actions .btn').forEach(btn => {
       btn.addEventListener('click', () => handleClock(btn, btn.dataset.type));
     });
+
+    bindSyncStatusEvents();
+  }
+
+  function bindSyncStatusEvents() {
+    document.getElementById('sync-retry-btn')?.addEventListener('click', () => {
+      Storage.flushPendingTimeRecords();
+    });
+  }
+
+  // 未送信キューの状態が変わったときに呼ばれる（app.js から）
+  // 送信済みになった打刻も表示に残るよう、キューの打刻をキャッシュへ取り込んでから描画する
+  function refreshSyncStatus() {
+    const container = document.getElementById('screen-clock');
+    if (!container || !cachedStaff || !cachedRecords) return;
+    cachedRecords = mergePending(cachedRecords, Utils.today());
+    renderUI(container, cachedStaff, cachedRecords, Utils.today());
   }
 
   async function handleClock(btn, type) {
@@ -113,26 +169,31 @@ const ClockScreen = (() => {
     // ボタンをローディング状態に
     Utils.btnLoading(btn, true);
 
+    // ID と時刻は「ボタンを押した時点」で確定し、再送してもこのまま送る
     const record = {
-      id: Utils.generateId(),
+      id: (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : Utils.generateId() + Utils.generateId(),
       staffId: selectedStaffId,
-      date: Utils.today(),
+      date: Utils.formatDate(now),
       type: type,
       time: now.toISOString(),
       modified: false
     };
 
-    // キャッシュにレコード追加してUIを即更新
-    if (cachedRecords) {
-      cachedRecords.push(record);
-      renderUI(document.getElementById('screen-clock'), cachedStaff, cachedRecords, Utils.today());
+    // 未送信キューに保存 → GASへ送信。成功を確認できたら今まで通りのトースト
+    let saved = false;
+    try {
+      saved = await Storage.addTimeRecordQueued(record);
+    } catch (e) {
+      console.error('打刻の保存に失敗しました:', e);
     }
-
-    Utils.showToast(`${s.name}さん：${typeLabels[type]}（${timeStr}）`, 'success');
-
-    // GAS保存はバックグラウンド（UIをブロックしない）
-    Storage.addTimeRecordBackground(record);
+    if (cachedRecords && !cachedRecords.some(r => r.id === record.id)) cachedRecords.push(record);
+    if (saved) {
+      Utils.showToast(`${s.name}さん：${typeLabels[type]}（${timeStr}）`, 'success');
+    } else {
+      Utils.showToast(`${s.name}さんの${typeLabels[type]}（${timeStr}）を送信できませんでした。端末に保存し、自動で再送します`, 'error');
+    }
+    refreshSyncStatus();
   }
 
-  return { render };
+  return { render, refreshSyncStatus };
 })();

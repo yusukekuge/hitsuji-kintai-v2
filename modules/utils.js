@@ -83,12 +83,14 @@ const Utils = (() => {
     return Math.floor((new Date(end) - new Date(start)) / 60000);
   }
 
-  // トースト表示
+  // トースト表示（前のトーストのタイマーが新しいトーストを消さないようにする）
+  let toastTimer = null;
   function showToast(message, type = '') {
     const toast = document.getElementById('toast');
     toast.textContent = message;
     toast.className = 'toast show' + (type ? ' ' + type : '');
-    setTimeout(() => { toast.className = 'toast'; }, 3000);
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => { toast.className = 'toast'; }, 3000);
   }
 
   // 確認モーダル

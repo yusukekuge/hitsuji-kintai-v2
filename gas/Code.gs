@@ -64,7 +64,7 @@ function doGet(e) {
   if (action === 'ping') {
     return jsonOk({ message: 'pong' });
   }
-  return jsonOk({ message: '勤怠管理システム API is running', version: '3.1' });
+  return jsonOk({ message: '勤怠管理システム API is running', version: '3.2' });
 }
 
 function doPost(e) {
@@ -265,17 +265,28 @@ function getTimeRecordsByRangeData(startDate, endDate) {
   return sheetToArray(sheet).filter(r => r.date >= startDate && r.date <= endDate);
 }
 
+// 端末側で作ったIDのまま受け取る。同じIDがすでにあれば追加せず成功を返す（再送で二重登録しないため）
 function addTimeRecordData(record) {
-  const sheet = getSheet('time_records');
-  const newRow = sheet.getLastRow() + 1;
-  const row = [
-    record.id, record.staffId, record.date,
-    record.type, record.time, record.modified ? '1' : '0'
-  ];
-  const range = sheet.getRange(newRow, 1, 1, row.length);
-  range.setNumberFormat('@');
-  range.setValues([row]);
-  return 'ok';
+  if (!record || !record.id) throw new Error('打刻IDがありません');
+  return withLock(() => {
+    const sheet = getSheet('time_records');
+    const lastRow = sheet.getLastRow();
+    if (lastRow >= 2) {
+      const ids = sheet.getRange(2, 1, lastRow - 1, 1).getValues();
+      const id = String(record.id);
+      for (let i = 0; i < ids.length; i++) {
+        if (String(ids[i][0]) === id) return 'ok';
+      }
+    }
+    const row = [
+      record.id, record.staffId, record.date,
+      record.type, record.time, record.modified ? '1' : '0'
+    ];
+    const range = sheet.getRange(lastRow + 1, 1, 1, row.length);
+    range.setNumberFormat('@');
+    range.setValues([row]);
+    return 'ok';
+  });
 }
 
 function updateTimeRecordData(record) {

@@ -20,7 +20,27 @@ const App = (() => {
     setupNavigation();
     setupClock();
     setupMenuToggle();
+    setupPendingSync();
     navigateTo('clock');
+  }
+
+  // 未送信の打刻の自動再送（アプリを開いたとき・30秒ごと・通信が戻ったとき）
+  function setupPendingSync() {
+    Storage.onPendingChange(() => ClockScreen.refreshSyncStatus());
+    Storage.flushPendingTimeRecords();
+    setInterval(() => Storage.flushPendingTimeRecords(), 30000);
+    window.addEventListener('online', () => Storage.flushPendingTimeRecords());
+    // 別タブでキューが変わったときも表示を更新
+    window.addEventListener('storage', e => {
+      if (e.key === Storage.PENDING_KEY) ClockScreen.refreshSyncStatus();
+    });
+    // 未送信がある状態でページを閉じようとしたら確認を出す
+    window.addEventListener('beforeunload', e => {
+      if (Storage.getPendingTimeRecords().length > 0) {
+        e.preventDefault();
+        e.returnValue = '';
+      }
+    });
   }
 
   function setupClock() {

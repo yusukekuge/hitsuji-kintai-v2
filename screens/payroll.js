@@ -23,6 +23,11 @@ const PayrollScreen = (() => {
     const wageTable = Calc.buildWageTable(allStaff, wageHistory);
     const payrolls = Calc.calcPayrollForPeriod(allStaff, records, wageTable, minWages, period);
     const violations = payrolls.filter(p => p.minWageViolations.length > 0);
+    // 打刻漏れ（警告のみ。計算は変えない＝打刻漏れの日は0時間のまま）
+    const punchIssues = Calc.findPunchIssues(records, payrolls.map(p => p.staffId), Utils.today());
+    const issuesByStaff = payrolls
+      .map(p => ({ p, issues: punchIssues.filter(i => i.staffId === p.staffId) }))
+      .filter(x => x.issues.length > 0);
 
     const payDay = Storage.getSetting('pay_day', '25');
     const payDateStr = `${currentYear}年${currentMonth + 1}月${payDay}日`;
@@ -47,9 +52,23 @@ const PayrollScreen = (() => {
           </div>` : ''}
       </div>
 
+      ${issuesByStaff.length > 0 ? `
+        <div class="card no-print">
+          <div class="alert-box alert-danger" style="color:var(--danger);display:block;">
+            <strong>締め期間内に打刻漏れがあります（出勤・退勤の漏れは0時間、休憩の漏れは休憩時間が正しくない状態で計算されています）</strong>
+            <ul style="margin:8px 0 0 1.2em;">
+              ${issuesByStaff.map(({ p, issues }) => `
+                <li>${Utils.escapeHtml(p.staffName)}：打刻漏れ ${issues.length}日（${issues.map(i => `${formatMD(i.date)} ${i.issues.join('・')}`).join('、')}）</li>
+              `).join('')}
+            </ul>
+            <div style="margin-top:6px;font-size:0.85rem;">勤務記録の「修正」から打刻を追加してください。</div>
+          </div>
+        </div>
+      ` : ''}
+
       ${violations.length > 0 ? `
         <div class="card no-print">
-          <div class="alert-box alert-danger" style="color:var(--danger);">
+          <div class="alert-box alert-danger" style="color:var(--danger);display:block;">
             <strong>最低賃金を下回る時給で計算された勤務日があります</strong>
             <ul style="margin:8px 0 0 1.2em;">
               ${violations.map(p => summarizeViolations(p).map(v => `
@@ -79,6 +98,7 @@ const PayrollScreen = (() => {
                     ${Utils.escapeHtml(p.staffName)}
                     ${p.retired ? '<span class="badge badge-warning">退職</span>' : ''}
                     ${p.minWageViolations.length > 0 ? '<span class="badge badge-danger">最賃未満</span>' : ''}
+                    ${punchIssues.some(i => i.staffId === p.staffId) ? '<span class="badge badge-danger">打刻漏れ</span>' : ''}
                   </td>
                   <td class="num">${p.workDays}日</td>
                   <td class="num">${Utils.minutesToHM(p.totalWorkMinutes)}</td>

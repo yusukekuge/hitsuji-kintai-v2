@@ -485,6 +485,33 @@ td.num { text-align: right; font-variant-numeric: tabular-nums; }
 .alert-danger { background: var(--danger-light); border-left: 4px solid var(--danger); }
 .alert-info { background: var(--primary-light); border-left: 4px solid var(--primary); }
 
+/* ===== 打刻の送信状態 ===== */
+.sync-sending {
+  font-size: 0.8rem;
+  color: var(--text-light);
+  text-align: right;
+  margin-bottom: 6px;
+}
+.sync-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  background: var(--danger);
+  color: var(--white);
+  font-weight: 700;
+  font-size: 0.9rem;
+  padding: 10px 14px;
+  border-radius: var(--radius);
+  margin-bottom: 12px;
+}
+.sync-banner .btn { background: var(--white); color: var(--danger); }
+
+/* ===== 打刻漏れ ===== */
+tr.row-missing td { background: var(--danger-light); }
+.missing-label { color: var(--danger); font-weight: 700; font-size: 0.8rem; }
+
 /* ===== 月ナビ ===== */
 .month-nav {
   display: flex;

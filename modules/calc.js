@@ -187,6 +187,34 @@ const Calc = (() => {
     };
   }
 
+  // ===== 打刻漏れの検出（警告用。給与の計算方法は変えない） =====
+  // 当日（today）は勤務中・休憩中の可能性があるため「退勤なし」「休憩終了なし」を出さない
+  function detectPunchIssues(records, staffId, date, today = Utils.today()) {
+    const dayRecords = records.filter(r => r.staffId === staffId && r.date === date);
+    const count = type => dayRecords.filter(r => r.type === type).length;
+    const clockIn = count('clock_in'), clockOut = count('clock_out');
+    const breakStart = count('break_start'), breakEnd = count('break_end');
+    const inProgress = date === today && clockOut === 0;
+    const issues = [];
+    if (clockIn > 0 && clockOut === 0 && !inProgress) issues.push('退勤なし');
+    if (clockOut > 0 && clockIn === 0) issues.push('出勤なし');
+    if (breakStart > breakEnd && !inProgress) issues.push('休憩終了なし');
+    if (breakEnd > breakStart) issues.push('休憩開始なし');
+    return issues;
+  }
+
+  // 期間内の打刻漏れ一覧：[{ staffId, date, issues }]（日付順）
+  function findPunchIssues(records, staffIds, today = Utils.today()) {
+    const result = [];
+    const keys = new Set(records.filter(r => staffIds.includes(r.staffId)).map(r => r.staffId + '\u0000' + r.date));
+    keys.forEach(key => {
+      const [staffId, date] = key.split('\u0000');
+      const issues = detectPunchIssues(records, staffId, date, today);
+      if (issues.length > 0) result.push({ staffId, date, issues });
+    });
+    return result.sort((a, b) => a.date.localeCompare(b.date));
+  }
+
   // 深夜時間の計算
   function calcNightMinutes(start, end, breakMin) {
     let nightMin = 0;
@@ -658,6 +686,8 @@ const Calc = (() => {
     validateWageChange,
     laterMinWageRaises,
     getAutoBreakMinutes,
+    detectPunchIssues,
+    findPunchIssues,
     calcDayWork,
     calcNightMinutes,
     calcMonthlyPay,
