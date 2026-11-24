@@ -442,6 +442,17 @@ td.num { text-align: right; font-variant-numeric: tabular-nums; }
   grid-template-columns: repeat(4, 1fr);
   gap: 10px;
 }
+/* 今の状態では押せない打刻（押すと案内を表示） */
+.clock-btn[data-unavailable] {
+  background: #c8cfd4;
+  color: #fff;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+.clock-btn[data-unavailable]:hover { background: #c8cfd4; }
+.clock-note { font-size: 0.95rem; margin-bottom: 10px; color: var(--text-light); }
+.clock-note-done { color: var(--primary); font-weight: 700; font-size: 1.1rem; text-align: center; }
+.clock-note-warn { color: var(--danger); font-weight: 700; }
 .status-list {
   list-style: none;
   display: grid;

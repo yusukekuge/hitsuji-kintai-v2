@@ -27,9 +27,11 @@ const App = (() => {
   // 未送信の打刻の自動再送（アプリを開いたとき・30秒ごと・通信が戻ったとき）
   function setupPendingSync() {
     Storage.onPendingChange(() => ClockScreen.refreshSyncStatus());
+    // 再送のあとに打刻画面を更新（今日の打刻を読めていなかった場合は読み直して、ボタンの状態を戻す）
+    const flushAndRefresh = () => Storage.flushPendingTimeRecords().then(() => ClockScreen.refreshSyncStatus());
     Storage.flushPendingTimeRecords();
-    setInterval(() => Storage.flushPendingTimeRecords(), 30000);
-    window.addEventListener('online', () => Storage.flushPendingTimeRecords());
+    setInterval(flushAndRefresh, 30000);
+    window.addEventListener('online', flushAndRefresh);
     // 別タブでキューが変わったときも表示を更新
     window.addEventListener('storage', e => {
       if (e.key === Storage.PENDING_KEY) ClockScreen.refreshSyncStatus();

@@ -155,6 +155,18 @@ const Storage = (() => {
     return localGet('time_records').filter(r => r.date === date);
   }
 
+  // 打刻画面用：GASから読めたかどうか（loaded）も返す。読めなければ端末内の記録で代用
+  async function getTimeRecordsChecked(date) {
+    if (useGas) {
+      try { return { records: await gasRequest('getTimeRecords', { date }), loaded: true }; }
+      catch (e) {
+        console.warn('GAS getTimeRecords failed:', e.message);
+        return { records: localGet('time_records').filter(r => r.date === date), loaded: false };
+      }
+    }
+    return { records: localGet('time_records').filter(r => r.date === date), loaded: true };
+  }
+
   async function getTimeRecordsByMonth(year, month) {
     if (useGas) {
       try { return await gasRequest('getTimeRecordsByMonth', { year, month }); }
@@ -625,7 +637,7 @@ const Storage = (() => {
   return {
     init, setGasUrl, getGasUrl, isGasMode, clearStaffCache,
     getStaff, getAllStaff, saveStaff, deleteStaff,
-    getTimeRecords, getTimeRecordsByMonth, getTimeRecordsByRange,
+    getTimeRecords, getTimeRecordsChecked, getTimeRecordsByMonth, getTimeRecordsByRange,
     addTimeRecord, updateTimeRecord, deleteTimeRecord, getRecordChanges,
     getPayrollClosed, closePayroll, cancelPayrollClose, getAdjustments, addAdjustment, deleteAdjustment,
     addTimeRecordQueued, flushPendingTimeRecords, getPendingTimeRecords, isSendingPending, onPendingChange, PENDING_KEY,

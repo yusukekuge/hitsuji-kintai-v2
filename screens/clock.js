@@ -3,14 +3,38 @@ const ClockScreen = (() => {
   let selectedStaffId = null;
   let cachedStaff = null;
   let cachedRecords = null;
+  let todayLoaded = true; // 今日の打刻をGASから読めたか（読めないときは状態で絞り込まない）
+
+  // 今日の状態ごとに押せる打刻
+  const ALLOWED_TYPES = {
+    none: ['clock_in'],
+    working: ['break_start', 'clock_out'],
+    break: ['break_end'],
+    done: []
+  };
+
+  // 押せない（グレーの）ボタンを押したときの案内
+  function unavailableMessage(status, type) {
+    if (status === 'none') return 'まだ出勤の記録がありません。出勤を押し忘れた場合は、店長に伝えてください';
+    if (status === 'done') return '本日は退勤済みです。打刻を間違えた場合は、店長に伝えてください';
+    if (status === 'break') {
+      return type === 'break_start' ? 'すでに休憩中です。戻るときは「休憩終了」を押してください'
+        : '休憩中です。先に「休憩終了」を押してください';
+    }
+    // 勤務中
+    return type === 'clock_in' ? 'すでに出勤しています。出勤の記録を間違えた場合は、店長に伝えてください'
+      : '休憩中ではありません。休憩開始を押し忘れた場合は、店長に伝えてください';
+  }
 
   async function render() {
     const container = document.getElementById('screen-clock');
     const todayStr = Utils.today();
-    const [staff, records] = await Promise.all([
+    const [staff, today] = await Promise.all([
       Storage.getStaff(),
-      Storage.getTimeRecords(todayStr)
+      Storage.getTimeRecordsChecked(todayStr)
     ]);
+    const records = today.records;
+    todayLoaded = today.loaded;
     cachedStaff = staff;
     cachedRecords = mergePending(records, todayStr);
 
@@ -66,9 +90,26 @@ const ClockScreen = (() => {
         statuses[s.id] = { status: 'working', label: `勤務中（休憩戻り ${Utils.formatTime(last.time)}）`, cssClass: 'status-working' };
       } else if (last.type === 'clock_out') {
         statuses[s.id] = { status: 'done', label: `退勤済 ${Utils.formatTime(last.time)}`, cssClass: 'status-done' };
+      } else {
+        statuses[s.id] = { status: 'unknown', label: '状態不明', cssClass: '' };
       }
       statuses[s.id].pendingMark = pendingMark;
     });
+
+    // 選んだスタッフの今日の状態に合わせて、押せるボタンを決める
+    // （今日の打刻を読めなかったとき・状態不明のときは絞り込まない＝打刻できなくなるのを防ぐ）
+    const selected = selectedStaffId ? statuses[selectedStaffId] : null;
+    const restrict = !!selected && todayLoaded && ALLOWED_TYPES[selected.status] !== undefined;
+    const buttonAttrs = type => {
+      if (!selected) return 'disabled';
+      if (!restrict || ALLOWED_TYPES[selected.status].includes(type)) return '';
+      return 'aria-disabled="true" data-unavailable="1"';
+    };
+    const selectedStaff = selected ? staff.find(s => s.id === selectedStaffId) : null;
+    const clockNote = !selected ? 'スタッフを選んでください'
+      : !todayLoaded ? `${Utils.escapeHtml(selectedStaff.name)}さん`
+      : selected.status === 'done' ? '本日は退勤済みです'
+      : `${Utils.escapeHtml(selectedStaff.name)}さん：${selected.label}`;
 
     container.innerHTML = `
       <div id="clock-sync-status">${renderSyncStatusHTML()}</div>
@@ -95,11 +136,13 @@ const ClockScreen = (() => {
 
       <div class="card">
         <h3 class="card-title">打刻</h3>
+        <p class="clock-note ${selected && selected.status === 'done' ? 'clock-note-done' : ''}">${clockNote}</p>
+        ${selected && !todayLoaded ? '<p class="clock-note clock-note-warn">通信できないため、今日の打刻の状態を確認できません。押す打刻を確認してください。</p>' : ''}
         <div class="clock-actions">
-          <button class="btn btn-success clock-btn" data-type="clock_in" ${!selectedStaffId ? 'disabled' : ''}>出勤</button>
-          <button class="btn btn-warning clock-btn" data-type="break_start" ${!selectedStaffId ? 'disabled' : ''}>休憩開始</button>
-          <button class="btn btn-primary clock-btn" data-type="break_end" ${!selectedStaffId ? 'disabled' : ''}>休憩終了</button>
-          <button class="btn btn-danger clock-btn" data-type="clock_out" ${!selectedStaffId ? 'disabled' : ''}>退勤</button>
+          <button class="btn btn-success clock-btn" data-type="clock_in" ${buttonAttrs('clock_in')}>出勤</button>
+          <button class="btn btn-warning clock-btn" data-type="break_start" ${buttonAttrs('break_start')}>休憩開始</button>
+          <button class="btn btn-primary clock-btn" data-type="break_end" ${buttonAttrs('break_end')}>休憩終了</button>
+          <button class="btn btn-danger clock-btn" data-type="clock_out" ${buttonAttrs('clock_out')}>退勤</button>
         </div>
       </div>
 
@@ -132,7 +175,14 @@ const ClockScreen = (() => {
     });
 
     container.querySelectorAll('.clock-actions .btn').forEach(btn => {
-      btn.addEventListener('click', () => handleClock(btn, btn.dataset.type));
+      btn.addEventListener('click', () => {
+        // グレーのボタン：打刻せず、理由を案内する
+        if (btn.dataset.unavailable) {
+          Utils.showToast(unavailableMessage(selected.status, btn.dataset.type), 'error');
+          return;
+        }
+        handleClock(btn, btn.dataset.type);
+      });
     });
 
     bindSyncStatusEvents();
@@ -149,6 +199,11 @@ const ClockScreen = (() => {
   function refreshSyncStatus() {
     const container = document.getElementById('screen-clock');
     if (!container || !cachedStaff || !cachedRecords) return;
+    // 今日の打刻を読めていなかった場合は、送信が終わったところで読み直す（通信が戻れば状態の絞り込みも戻る）
+    if (!todayLoaded && !Storage.isSendingPending()) {
+      render();
+      return;
+    }
     cachedRecords = mergePending(cachedRecords, Utils.today());
     renderUI(container, cachedStaff, cachedRecords, Utils.today());
   }
